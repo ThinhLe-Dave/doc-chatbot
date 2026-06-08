@@ -1,0 +1,8 @@
+database/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+*.npy
+*.npz

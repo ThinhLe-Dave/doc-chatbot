@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+typer[rich]
+sentence-transformers
+numpy
+beautifulsoup4
+requests

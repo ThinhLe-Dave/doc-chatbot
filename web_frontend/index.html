@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Doc Chatbot</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background: #0f172a; color: #e2e8f0; }
+        .container { max-width: 960px; margin: 0 auto; padding: 32px 16px 64px; }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 22px; }
+        .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+        .topbar h1 { font-size: 20px; margin: 0; color: #f8fafc; }
+        .row { display: flex; gap: 8px; flex-wrap: wrap; }
+        .row > * { flex: 1 1 auto; min-width: 120px; }
+        label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #94a3b8; }
+        input, select { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 10px; padding: 10px 12px; font-size: 15px; line-height: 1.35; }
+        button { background: #2563eb; color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
+        button:disabled { background: #475569; color: #94a3b8; cursor: not-allowed; }
+        .search-wrap { margin-top: 14px; display: flex; gap: 8px; }
+        .search-wrap input { flex: 1; }
+        .status { margin-top: 10px; font-size: 13px; color: #94a3b8; min-height: 1.4em; }
+        .status.error { color: #f87171; }
+        .results { margin-top: 22px; display: grid; gap: 18px; }
+        .result { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 18px; transition: transform .04s ease; }
+        .result h2 { font-size: 16px; margin: 0 0 4px; color: #f8fafc; }
+        .meta { font-size: 12px; color: #94a3b8; line-height: 1.5; }
+        .meta a { color: #7dd3fc; text-decoration: none; }
+        .meta a:hover { text-decoration: underline; }
+        .score { display: inline-block; margin-top: 6px; padding: 2px 8px; background: #0f172a; border-radius: 999px; font-size: 12px; color: #7dd3fc; }
+        .excerpt { margin-top: 12px; font-size: 15px; line-height: 1.4; color: #e2e8f0; }
+        .chunks { margin-top: 14px; display: grid; gap: 10px; }
+        .chunk { background: #0f172a; border: 1px solid #1f2937; border-radius: 12px; padding: 12px; font-size: 14px; line-height: 1.4; color: #cbd5e1; }
+        .empty { color: #94a3b8; text-align: center; padding: 40px 8px; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="topbar"><h1>Doc Chatbot</h1></div>
+            <div class="row">
+                <label>API URL<input id="apiBase" value="http://127.0.0.1:8000" placeholder="http://127.0.0.1:8000"></label>
+                <label>Sources<input id="sources" value="database/research_data.json"></label>
+                <label>Top results<input id="top_k" type="number" min="1" max="50" value="10"></label>
+                <label>Chunks/doc<input id="chunk_k" type="number" min="1" max="20" value="3"></label>
+                <label>Min score<input id="min_score" type="number" min="0" max="1" step="0.01" value="0.01"></label>
+                <label>Hybrid<select id="hybrid"><option value="true" selected>On</option><option value="false">Off</option></select></label>
+            </div>
+            <div class="search-wrap">
+                <input id="query" type="text" placeholder="Ask anything..." autocomplete="off">
+                <button id="searchBtn">Search</button>
+                <button id="cancelBtn" style="display: none; background: #475569;">Cancel</button>
+            </div>
+            <div id="status" class="status"></div>
+        </div>
+        <div id="results" class="results"></div>
+    </div>
+    <script>
+        const $ = id => document.getElementById(id);
+        let configDefaults = { hybrid_weight: 0.4 };
+        let currentAbortController = null;
+
+        async function loadConfig() {
+            try {
+                const apiBase = getApiBase();
+                const res = await fetch(`${apiBase}/api/config`, { signal: AbortSignal.timeout(3000) });
+                if (res.ok) {
+                    const data = await res.json();
+                    configDefaults = data.defaults || configDefaults;
+                }
+            } catch (e) {
+                // Use defaults on failure
+            }
+        }
+
+        loadConfig();
+
+        async function search(){
+            const query = $('query').value.trim();
+            if (!query) return;
+            const status = $('status');
+            const btn = $('searchBtn');
+            const cancelBtn = $('cancelBtn');
+            status.className = 'status'; status.textContent = 'Searching...';
+            btn.disabled = true;
+            cancelBtn.style.display = 'inline-block';
+            
+            currentAbortController = new AbortController();
+            const signal = currentAbortController.signal;
+            
+            try {
+                const body = {
+                    query,
+                    input: $('sources').value.trim() || undefined,
+                    top_k: parseInt($('top_k').value, 10) || 10,
+                    chunk_k: parseInt($('chunk_k').value, 10) || 3,
+                    min_score: parseFloat($('min_score').value) || 0,
+                    hybrid: $('hybrid').value === 'true',
+                    hybrid_weight: configDefaults.hybrid_weight,
+                };
+                const apiBase = getApiBase();
+                const res = await fetch(`${apiBase}/api/search`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                    signal,
+                });
+                if (!res.ok) {
+                    const text = await res.text();
+                    status.className = 'status error';
+                    status.textContent = res.status + ': ' + text;
+                    return;
+                }
+                const data = await res.json();
+                status.textContent = data.count + ' results in ' + data.elapsed_ms + 'ms';
+                render(data.results);
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    status.className = 'status';
+                    status.textContent = 'Search cancelled';
+                } else {
+                    status.className = 'status error';
+                    status.textContent = String(e);
+                }
+            } finally {
+                btn.disabled = false;
+                cancelBtn.style.display = 'none';
+                currentAbortController = null;
+            }
+        }
+        
+        function cancelSearch() {
+            if (currentAbortController) {
+                currentAbortController.abort();
+            }
+        }
+        function esc(str){
+            const div=document.createElement('div'); div.textContent=str; return div.innerHTML;
+        }
+        function render(results){
+            const box=$('results');
+            if (!results.length){ box.innerHTML = '<div class="empty">No results yet</div>'; return; }
+            box.innerHTML = results.map(r => {
+                const metaParts = [];
+                if (r.source) {
+                    const url = r.source;
+                    const label = tryPrettyLabel(url);
+                    metaParts.push(`<a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>`);
+                }
+                [r.book, r.chapter, r.verse, r.section].filter(Boolean).forEach(v => metaParts.push(esc(v)));
+                const meta = metaParts.join(' › ');
+                const best = (r.best_chunk || '').slice(0, 400);
+                const score = Math.round((r.score || 0) * 10000) / 10000;
+                return `
+                    <div class="result">
+                        <div class="meta">${meta}</div>
+                        <h2>${esc(r.title || 'Untitled')}</h2>
+                        <div class="excerpt">
+                            <div class="score">Score: ${score}</div>
+                            ${best ? esc(best) : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        function tryPrettyLabel(url){
+            try {
+                const u = new URL(url);
+                const base = u.host.replace(/^www\./, '');
+                const pathname = u.pathname.replace(/\/$/, '');
+                return pathname ? `${base}${pathname}` : base;
+            } catch (e) {
+                return url;
+            }
+        }
+        $('searchBtn').addEventListener('click', search);
+        $('cancelBtn').addEventListener('click', cancelSearch);
+        $('query').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+        render([]);
+
+        function getApiBase() {
+            const raw = ($('apiBase').value || '').trim().replace(/\/$/, '');
+            return raw || 'http://127.0.0.1:8000';
+        }
+    </script>
+</body>
+</html>
