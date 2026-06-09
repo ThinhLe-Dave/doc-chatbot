@@ -1,67 +1,25 @@
 import json
 import os
 import re
-from typing import Optional, Tuple, List
+from typing import List, Optional
 
 import numpy as np
 import typer
 
-from chunker.document import (
-    load_documents_from_json,
-    deduplicate_chunks,
-)
-from chunker.chunker import (
-    count_chunks_in_json,
-    gather_candidate_chunks,
-    get_chunk_file_path,
-    write_chunks_to_file,
-)
-from embedding.embedding import (
-    embed_texts,
-    load_or_build_embeddings,
-    save_embeddings,
-    build_embedding_cache,
-    get_embedding_model,
-)
-
-
-def _debug(msg: str) -> None:
-    if os.environ.get("DOC_DEBUG") == "1":
-        typer.secho(f"[DEBUG] {msg}", fg=typer.colors.YELLOW, dim=True)
-
-
-def build_chunk_cache(input_file: str, output_file: Optional[str] = None) -> Tuple[int, str]:
-    _debug(f"build_chunk_cache input_file={input_file} output_file={output_file}")
-    documents = load_documents_from_json(input_file)
-    _debug(f"loaded {len(documents)} documents")
-    if not documents:
-        raise ValueError("No documents found in the input file.")
-
-    output_path = output_file or get_chunk_file_path(input_file)
-    total_chunks = write_chunks_to_file(documents, output_path)
-
-    if total_chunks == 0:
-        raise ValueError("No chunks were created from the loaded documents.")
-
-    _debug("loading embedding model")
-    model = get_embedding_model()
-    _debug("building embedding cache")
-    chunk_embeddings, chunk_ids = build_embedding_cache(output_path, model)
-    _debug(f"saving embeddings chunk_ids={len(chunk_ids)} embeddings_shape={getattr(chunk_embeddings, 'shape', None)}")
-    save_embeddings(output_path, chunk_embeddings, chunk_ids)
-
-    return total_chunks, output_path
+from chunker.document import load_documents_from_json, deduplicate_chunks
+from chunker.chunker import get_chunk_file_path
+from embedding.embedding import embed_texts, get_embedding_model
+from utils.logging import debug
+from vector_store.store import StaleCacheError, VectorStore
 
 
 def _truncate_preview(text: str, max_len: int = 220) -> str:
-    """Truncate text to max_len with ellipsis if needed."""
     if len(text) <= max_len:
         return text
     return text[:max_len - 3] + "..."
 
 
 def _format_single_result(index: int, item: dict) -> None:
-    """Format and print a single search result."""
     title = item.get("title") or "Untitled document"
     source = item.get("source", "")
     book = item.get("book")
@@ -98,7 +56,6 @@ def _format_single_result(index: int, item: dict) -> None:
 
 
 def _extract_primary_text(chunks: list, item: dict) -> str:
-    """Extract primary text from chunks or best_chunk field."""
     if chunks and isinstance(chunks[0], dict):
         return chunks[0].get("text", "")
     return (item.get("best_chunk") or "").strip()
@@ -117,6 +74,30 @@ def display_results(results: List[dict], as_json: bool = False) -> None:
         _format_single_result(index, item)
 
 
+def build_chunk_cache(input_file: str, output_file: Optional[str] = None) -> tuple:
+    from chunker.chunker import write_chunks_to_file
+
+    debug(f"build_chunk_cache input={input_file} output={output_file}", "processor")
+    documents = load_documents_from_json(input_file)
+    debug(f"loaded {len(documents)} documents", "processor")
+    if not documents:
+        raise ValueError("No documents found in the input file.")
+
+    output_path = output_file or get_chunk_file_path(input_file)
+    total_chunks = write_chunks_to_file(documents, output_path)
+
+    if total_chunks == 0:
+        raise ValueError("No chunks were created from the loaded documents.")
+
+    debug("loading embedding model", "embedding.model")
+    model = get_embedding_model()
+    debug("building embedding cache via VectorStore", "vector.store")
+    store = VectorStore(output_path)
+    store.build(model)
+
+    return total_chunks, output_path
+
+
 def recommend_documents(
     query: str,
     input_file: str,
@@ -127,39 +108,130 @@ def recommend_documents(
     hybrid_weight: float = 0.4,
 ) -> List[dict]:
     hybrid_weight = max(0.0, min(1.0, hybrid_weight))
-    _debug(f"recommend_documents query={query!r} input={input_file} top_k={top_k} chunk_k={chunk_k} min_score={min_score} hybrid={hybrid}")
+    debug(f"recommend query={query!r} input={input_file} top_k={top_k} chunk_k={chunk_k} min_score={min_score} hybrid={hybrid}", "processor")
     chunk_file = get_chunk_file_path(input_file)
-    _debug(f"chunk_file={chunk_file} exists={os.path.exists(chunk_file)}")
-    if not os.path.exists(chunk_file) or count_chunks_in_json(chunk_file) == 0:
-        chunk_count, saved_path = build_chunk_cache(input_file, chunk_file)
-        typer.secho(f"Saved {chunk_count} chunks to {saved_path}", fg=typer.colors.GREEN)
+    debug(f"chunk_file={chunk_file} exists={os.path.exists(chunk_file)}", "processor")
+    if not os.path.exists(chunk_file):
+        raise FileNotFoundError(f"Chunk file not found: {chunk_file}. Run 'build-chunks' first.")
 
-    if not os.path.exists(chunk_file) or count_chunks_in_json(chunk_file) == 0:
-        raise ValueError("Could not generate any chunks from the loaded documents.")
+    store = VectorStore(chunk_file)
+    try:
+        store.load()
+    except (FileNotFoundError, StaleCacheError):
+        debug("rebuilding stale cache", "processor")
+        chunk_count, _ = build_chunk_cache(input_file, chunk_file)
+        typer.secho(f"Rebuilt {chunk_count} chunks in {chunk_file}", fg=typer.colors.GREEN)
+        store = VectorStore(chunk_file)
+        store.load()
 
-    embeddings, chunk_ids = load_or_build_embeddings(chunk_file)
+    if store.chunk_count == 0:
+        raise ValueError("Could not load any chunks from the cache.")
 
-    _debug("encoding query embedding")
+    debug("encoding query embedding", "embedding.encode")
     query_embedding = embed_texts(get_embedding_model(), [query])[0].astype(np.float32)
 
-    top_k_chunks = min(max(top_k * chunk_k * 8, top_k * chunk_k), embeddings.shape[0])
-    scores = (embeddings @ query_embedding).astype(np.float32)
+    top_k_chunks = min(max(top_k * chunk_k * 8, top_k * chunk_k), store.chunk_count)
+    search_results = store.search(query_embedding, top_k=top_k_chunks, min_score=0.0)
 
-    candidate_indices = set(np.argpartition(-scores, top_k_chunks - 1)[:top_k_chunks].tolist())
+    candidate_indices = {r.chunk_index for r in search_results}
+    scores = np.zeros(store.chunk_count, dtype=np.float32)
+    for r in search_results:
+        scores[r.chunk_index] = r.score
 
     query_terms = set(re.findall(r'\w+', query.lower()))
-    _debug(f"query={query!r} query_terms={sorted(query_terms)} hybrid={hybrid} hybrid_weight={hybrid_weight}")
-    _debug(f"candidate_indices={len(candidate_indices)}")
+    debug(f"query_terms={sorted(query_terms)} hybrid={hybrid} hybrid_weight={hybrid_weight}", "processor")
+    debug(f"candidate_indices={len(candidate_indices)}", "processor")
 
-    document_chunks = gather_candidate_chunks(
+    document_chunks = _gather_candidate_chunks(
         chunk_file, candidate_indices, scores, query_terms, hybrid, hybrid_weight, min_score, chunk_k
     )
 
     for doc in document_chunks.values():
-        _debug(f"dedupe doc_id={doc.get('id')} chunks_before={len(doc['chunks'])}")
+        debug(f"dedupe doc_id={doc.get('id')} chunks_before={len(doc['chunks'])}", "processor")
         doc["chunks"] = deduplicate_chunks(doc["chunks"])
 
     results = sorted(document_chunks.values(), key=lambda item: item["score"], reverse=True)
     final = [item for item in results if item["score"] >= min_score][:top_k]
-    _debug(f"results final count={len(final)}")
+    debug(f"results final count={len(final)}", "processor")
     return final
+
+
+def _compute_keyword_scores(
+    chunk_file: str,
+    candidate_indices: set,
+    query_terms: set,
+) -> dict:
+    from chunker.chunker import iter_chunk_batches_by_indices
+
+    keyword_scores: dict = {}
+    batch_iter = iter_chunk_batches_by_indices(chunk_file, candidate_indices, batch_size=128)
+    for index, chunk in batch_iter:
+        text = (chunk.content + " " + chunk.metadata.get("title", "")).lower()
+        matched = sum(1 for term in query_terms if term in text)
+        keyword_scores[index] = matched / len(query_terms) if query_terms else 0.0
+    return keyword_scores
+
+
+def _build_document_entry(chunk_id, document_id, content, path, metadata, score_value, chunk_k):
+    from chunker.document import build_document_entry
+    return build_document_entry(
+        chunk_id=chunk_id,
+        document_id=document_id,
+        content=content,
+        path=path,
+        metadata=metadata,
+        score_value=score_value,
+        chunk_k=chunk_k,
+    )
+
+
+def _update_document_entry(entry, content, score_value, chunk_k):
+    from chunker.document import update_document_entry
+    update_document_entry(entry, content, score_value, chunk_k)
+
+
+def _gather_candidate_chunks(
+    chunk_file: str,
+    candidate_indices: set,
+    scores: np.ndarray,
+    query_terms: set,
+    hybrid: bool,
+    hybrid_weight: float,
+    min_score: float,
+    chunk_k: int,
+) -> dict:
+    from chunker.chunker import iter_chunk_batches_by_indices
+
+    document_chunks: dict = {}
+    keyword_scores: dict = {}
+
+    if hybrid and query_terms:
+        keyword_scores = _compute_keyword_scores(chunk_file, candidate_indices, query_terms)
+
+    chunk_iter = iter_chunk_batches_by_indices(chunk_file, candidate_indices, batch_size=128)
+    for index, chunk in chunk_iter:
+        score_value = float(scores[index])
+        if hybrid and index in keyword_scores:
+            score_value = (1.0 - hybrid_weight) * score_value + hybrid_weight * keyword_scores[index]
+
+        if score_value < min_score:
+            continue
+
+        document_id = chunk.document_id
+        entry = document_chunks.get(document_id)
+
+        if entry is None:
+            entry = _build_document_entry(
+                chunk_id=chunk.id,
+                document_id=chunk.document_id,
+                content=chunk.content,
+                path=chunk.path,
+                metadata=chunk.metadata,
+                score_value=score_value,
+                chunk_k=chunk_k,
+            )
+            document_chunks[document_id] = entry
+        else:
+            _update_document_entry(entry, chunk.content, score_value, chunk_k)
+
+    return document_chunks

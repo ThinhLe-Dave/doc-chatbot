@@ -1,0 +1,60 @@
+from __future__ import annotations
+
+import os
+import warnings
+from typing import List
+
+
+_ENABLED_CATEGORIES: List[str] = []
+_PARSED = False
+
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    module=r"multiprocessing\.resource_tracker",
+)
+
+
+def _parse_categories() -> None:
+    global _ENABLED_CATEGORIES, _PARSED
+    if _PARSED:
+        return
+    _PARSED = True
+    raw = ""
+    try:
+        from utils.config import get_logging_categories
+        raw = get_logging_categories()
+    except Exception:
+        pass
+    if raw:
+        _ENABLED_CATEGORIES = [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def is_enabled(category: str = "") -> bool:
+    if not _PARSED:
+        _parse_categories()
+    if not _ENABLED_CATEGORIES:
+        return False
+    if not category:
+        return True
+    for entry in _ENABLED_CATEGORIES:
+        if entry == "*":
+            return True
+        if category == entry:
+            return True
+        if entry.endswith(".*") and category.startswith(entry[:-1]):
+            return True
+        if category.startswith(entry + "."):
+            return True
+    return False
+
+
+def debug(msg: str, category: str = "") -> None:
+    if not is_enabled(category):
+        return
+    try:
+        import typer
+        prefix = f"[DEBUG][{category}]" if category else "[DEBUG]"
+        typer.secho(f"{prefix} {msg}", fg=typer.colors.YELLOW, dim=True)
+    except Exception:
+        pass

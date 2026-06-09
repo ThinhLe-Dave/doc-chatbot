@@ -1,4 +1,5 @@
 database/
+.kilo/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -158,6 +159,7 @@ ENV/
 env.bak/
 venv.bak/
 database/
+.kilo/
 *.npy
 *.npz
 

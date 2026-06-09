@@ -29,7 +29,8 @@ class LowMemorySmokeTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_build_embedding_cache_handles_memory_error(self):
-        from embedding.embedding import get_embedding_model, build_embedding_cache
+        from embedding.embedding import get_embedding_model
+        from vector_store.store import VectorStore
         model = get_embedding_model()
         with open(self.chunk_file, "w", encoding="utf-8") as f:
             f.write(
@@ -48,9 +49,10 @@ class LowMemorySmokeTest(unittest.TestCase):
                 + "\n"
             )
 
-        with patch("embedding.embedding.np.memmap", side_effect=MemoryError("Simulated low memory")):
+        store = VectorStore(self.chunk_file)
+        with patch("vector_store.store.np.memmap", side_effect=MemoryError("Simulated low memory")):
             with self.assertRaises(MemoryError):
-                build_embedding_cache(self.chunk_file, model, batch_size=1)
+                store.build(model, batch_size=1)
 
     def test_search_handles_low_memory_encoding(self):
         with patch("embedding.embedding.SentenceTransformer.encode", side_effect=MemoryError("Simulated low memory")):
