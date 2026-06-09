@@ -1,5 +1,5 @@
 import os
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
 import typer
 
@@ -23,11 +23,12 @@ def main(
     min_score: Annotated[float, typer.Option("--min-score", help="Minimum combined score to include")] = 0.01,
     hybrid: Annotated[bool, typer.Option("--hybrid/--no-hybrid", help="Use hybrid semantic+keyword scoring")] = True,
     hybrid_weight: Annotated[float, typer.Option("--hybrid-weight", help="Keyword weight in hybrid score (0-1)")] = 0.4,
+    categories: Annotated[Optional[List[str]], typer.Option("--category", "-c", help="Filter chunks by category tag (repeatable)")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON instead of formatted text")] = False,
 ):
     if ctx.invoked_subcommand is None:
         prompt = query or typer.prompt("Enter a prompt describing the documents you want to read")
-        results = recommend_documents(prompt, input, top_k, chunk_k, min_score, hybrid, hybrid_weight)
+        results = recommend_documents(prompt, input, top_k, chunk_k, min_score, hybrid, hybrid_weight, categories)
         display_results(results, json_output)
 
 
@@ -40,11 +41,12 @@ def search(
     min_score: Annotated[float, typer.Option("--min-score", help="Minimum combined score to include")] = 0.01,
     hybrid: Annotated[bool, typer.Option("--hybrid/--no-hybrid", help="Use hybrid semantic+keyword scoring")] = True,
     hybrid_weight: Annotated[float, typer.Option("--hybrid-weight", help="Keyword weight in hybrid score (0-1)")] = 0.4,
+    categories: Annotated[Optional[List[str]], typer.Option("--category", "-c", help="Filter chunks by category tag (repeatable)")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON instead of formatted text")] = False,
 ):
     """Search scraped documents and return the most relevant pages."""
     prompt = query or typer.prompt("Enter a prompt describing the documents you want to read")
-    results = recommend_documents(prompt, input, top_k, chunk_k, min_score, hybrid, hybrid_weight)
+    results = recommend_documents(prompt, input, top_k, chunk_k, min_score, hybrid, hybrid_weight, categories)
     display_results(results, json_output)
 
 

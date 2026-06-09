@@ -1,5 +1,6 @@
 import time
 from pathlib import Path
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +31,7 @@ class SearchRequest(BaseModel):
     min_score: float = 0.01
     hybrid: bool = True
     hybrid_weight: float = 0.4
+    categories: Optional[List[str]] = None
 
 
 @app.get("/health", response_class=JSONResponse)
@@ -49,6 +51,7 @@ def search(req: SearchRequest):
             min_score=req.min_score,
             hybrid=req.hybrid,
             hybrid_weight=req.hybrid_weight,
+            categories=req.categories,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

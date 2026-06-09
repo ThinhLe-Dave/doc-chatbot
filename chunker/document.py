@@ -1,5 +1,7 @@
 import json
 import os
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 from uuid import uuid4
@@ -164,6 +166,10 @@ def load_documents_from_json(path: str) -> List["Document"]:
         raise MemoryError("Failed to load document JSON into memory")
 
 
+def _normalize(text: str) -> str:
+    return unicodedata.normalize("NFKD", text).lower().strip()
+
+
 def build_document_entry(
     chunk_id: str,
     document_id: str,
@@ -188,6 +194,8 @@ def build_document_entry(
         chapter = headers[1]
     if not verse and len(headers) > 2:
         verse = headers[2]
+
+    normalized_path = [_normalize(p) for p in path if p]
 
     return {
         "id": document_id,

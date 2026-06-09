@@ -7,6 +7,8 @@ import re
 from functools import lru_cache
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
+from chunker.keywords import extract_keywords as _extract_keywords
+
 _SENTENCE_END_RE = re.compile(r'(?<=[.!?])\s+')
 
 
@@ -305,12 +307,24 @@ class Chunk:
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "Chunk":
+        meta = dict(data.get("metadata", {}))
+        if "categories" not in meta:
+            headers = meta.get("headers", [])
+            if isinstance(headers, list):
+                derived = [h.strip() for h in headers if isinstance(h, str) and h.strip()]
+            else:
+                derived = []
+            for key in ("book", "chapter", "section", "verse", "source", "title"):
+                value = meta.get(key)
+                if value and str(value) not in derived:
+                    derived.append(str(value))
+            meta["categories"] = derived
         return Chunk(
             id=data.get("id", ""),
             document_id=data.get("document_id", ""),
             content=data.get("content", ""),
             path=data.get("path", []),
-            metadata=data.get("metadata", {}),
+            metadata=meta,
         )
 
 
@@ -424,9 +438,33 @@ class Chunker:
         headers = metadata.get("headers")
         if isinstance(headers, list):
             for header in headers:
-                if isinstance(header, str) and header.strip() and header not in path:
+                if isinstance(header, str) and header.strip() and header.strip() not in path:
                     path.append(header.strip())
         return path
+
+    def _build_categories(self, metadata: Dict[str, Any], content: str = "") -> List[str]:
+        categories: List[str] = []
+        for key in ("book", "chapter", "section", "verse"):
+            value = metadata.get(key)
+            if value:
+                categories.append(str(value))
+        headers = metadata.get("headers")
+        if isinstance(headers, list):
+            for header in headers:
+                if isinstance(header, str) and header.strip():
+                    categories.append(header.strip())
+        title = metadata.get("title")
+        if title and str(title) not in categories:
+            categories.append(str(title))
+        source = metadata.get("source")
+        if source and str(source) not in categories:
+            categories.append(str(source))
+
+        if content.strip():
+            for keyword in _extract_keywords(content):
+                if keyword not in categories:
+                    categories.append(keyword)
+        return categories
 
     def create_chunks(self, document_id: str, content: str, metadata: Dict[str, Any] = None) -> List["Chunk"]:
         """Create metadata-rich Chunk objects from a document's content."""
@@ -440,7 +478,7 @@ class Chunker:
                 document_id=document_id,
                 content=chunk_text,
                 path=path,
-                metadata={**metadata, "chunk_index": index},
+                metadata={**metadata, "chunk_index": index, "categories": self._build_categories(metadata, chunk_text)},
             )
             for index, chunk_text in enumerate(chunk_texts)
         ]
