@@ -41,12 +41,11 @@
             <div class="topbar"><h1>Doc Chatbot</h1></div>
             <div class="row">
                 <label>API URL<input id="apiBase" value="http://127.0.0.1:8000" placeholder="http://127.0.0.1:8000"></label>
-                <label>Sources<input id="sources" value="database/research_data.json"></label>
+                <label>Source<select id="sources"><option value="">Loading...</option></select></label>
                 <label>Top results<input id="top_k" type="number" min="1" max="50" value="10"></label>
                 <label>Chunks/doc<input id="chunk_k" type="number" min="1" max="20" value="3"></label>
                 <label>Min score<input id="min_score" type="number" min="0" max="1" step="0.01" value="0.01"></label>
                 <label>Hybrid<select id="hybrid"><option value="true" selected>On</option><option value="false">Off</option></select></label>
-                <label>Categories (comma-separated)<input id="categories" value=""></label>
             </div>
             <div class="search-wrap">
                 <input id="query" type="text" placeholder="Ask anything..." autocomplete="off">
@@ -69,9 +68,31 @@
                 if (res.ok) {
                     const data = await res.json();
                     configDefaults = data.defaults || configDefaults;
+                    populateSources(data.available_sources || [], configDefaults.input);
                 }
             } catch (e) {
-                // Use defaults on failure
+                const sources = $('sources');
+                sources.innerHTML = '<option value="database/research_data.json">database/research_data.json</option>';
+            }
+        }
+
+        function populateSources(sources, selected) {
+            const select = $('sources');
+            select.innerHTML = '';
+            for (const src of sources) {
+                const opt = document.createElement('option');
+                opt.value = 'database/' + src;
+                opt.textContent = src;
+                if (selected && 'database/' + src === selected) {
+                    opt.selected = true;
+                }
+                select.appendChild(opt);
+            }
+            if (!select.options.length) {
+                const opt = document.createElement('option');
+                opt.value = '';
+                opt.textContent = 'No sources found';
+                select.appendChild(opt);
             }
         }
 
@@ -93,13 +114,12 @@
             try {
                 const body = {
                     query,
-                    input: $('sources').value.trim() || undefined,
+                    input: $('sources').value || undefined,
                     top_k: parseInt($('top_k').value, 10) || 10,
                     chunk_k: parseInt($('chunk_k').value, 10) || 3,
                     min_score: parseFloat($('min_score').value) || 0,
                     hybrid: $('hybrid').value === 'true',
                     hybrid_weight: configDefaults.hybrid_weight,
-                    categories: ($('categories').value || '').split(',').map(s => s.trim()).filter(Boolean) || undefined,
                 };
                 const apiBase = getApiBase();
                 const res = await fetch(`${apiBase}/api/search`, {

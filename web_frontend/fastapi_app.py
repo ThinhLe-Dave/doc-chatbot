@@ -76,6 +76,12 @@ def index():
 
 @app.get("/api/config", response_class=JSONResponse)
 def get_config():
+    sources_dir = BASE_DIR / "database"
+    available_sources = []
+    if sources_dir.exists():
+        available_sources = sorted(
+            f.name for f in sources_dir.glob("*.json") if not f.name.endswith("_chunks.json")
+        )
     return {
         "defaults": {
             "input": "database/research_data.json",
@@ -84,5 +90,6 @@ def get_config():
             "min_score": 0.01,
             "hybrid": True,
             "hybrid_weight": 0.4,
-        }
+        },
+        "available_sources": available_sources,
     }
