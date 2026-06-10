@@ -15,7 +15,8 @@ A lightweight document search and chatbot-style retrieval system built from scra
 - `web_frontend/` — FastAPI backend + browser UI + Jupyter notebook
 - `chunker/` — document and chunk utilities
 - `embedding/` — embedding model loading, encoding, and persistence helpers
-- `datacollector/` — web scraping crawler
+- `datacollector/` — web scraping crawler and PDF scanner
+- `utils/` — utility functions including data utilities
 - `database/` — example scraped data and cache files
 - `requirements.txt` — required Python dependencies
 
@@ -110,3 +111,11 @@ To check all `.py` files compile cleanly:
 ```bash
 ./run.sh compile
 ```
+
+### Scan a PDF file
+
+```bash
+python app.py pdf-scan /path/to/document.pdf --output pdf_data.json
+```
+
+This command extracts text from each PDF page, creates chunks, and builds embeddings saved under `database/`.

@@ -5,3 +5,4 @@ sentence-transformers
 numpy
 beautifulsoup4
 requests
+pypdf

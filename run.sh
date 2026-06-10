@@ -40,6 +40,7 @@ print_success() {
     echo "------------------------------------------------"
     echo "💡 To activate the environment manually: source .venv/bin/activate"
     echo "🔍 To search via CLI:                  python3 app.py search --help"
+    echo "📄 To read a PDF:                      ./run.sh read-pdf <path-to-pdf>"
     echo "🌐 To run the web UI:                  ./run.sh serve --help"
     echo "🧪 To run tests:                       ./run.sh test"
     echo "🔨 To compile/check all .py files:     ./run.sh compile"
@@ -118,6 +119,24 @@ main() {
 
     if [[ "$1" == "compile" ]]; then
         run_compile
+        exit 0
+    fi
+
+    if [[ "$1" == "read-pdf" ]]; then
+        shift
+        run_app pdf-scan "$@"
+        exit 0
+    fi
+
+    if [[ "$1" == "scrape" ]]; then
+        shift
+        run_app scrape "$@"
+        exit 0
+    fi
+
+    if [[ "$1" == "build-chunks" ]]; then
+        shift
+        run_app build_chunks "$@"
         exit 0
     fi
 

@@ -10,8 +10,10 @@ from urllib.robotparser import RobotFileParser
 import requests
 from bs4 import BeautifulSoup
 
+from datacollector.base import DataCollector
 
-class Scraper:
+
+class Scraper(DataCollector):
     def __init__(
         self,
         base_url: str,
@@ -20,8 +22,8 @@ class Scraper:
         obey_robots: bool = True,
         max_workers: int = 6,
     ):
+        super().__init__(output_file)
         self.base_url = self._normalize_url(base_url)
-        self.output_file = output_file
         self.visited_urls = set()
         self.scraped_data = []
         self.scraped_data_lock = Lock()
@@ -37,6 +39,26 @@ class Scraper:
 
         logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
         self.logger = logging.getLogger(__name__)
+
+    def collect(self, source: str, **kwargs) -> list:
+        """Collect data from the base_url by crawling the website."""
+        max_pages = kwargs.get("max_pages", 20)
+        self.crawl(max_pages=max_pages)
+        return self.scraped_data
+
+    def scan(self, url: str = None, **kwargs) -> list:
+        """Alias for crawl - scans the website for data."""
+        max_pages = kwargs.get("max_pages", 20)
+        self.crawl(current_url=url, max_pages=max_pages)
+        return self.scraped_data
+
+    def export_to_json(self, output_file: str = None) -> str:
+        """Saves the scraped data into a formatted JSON file."""
+        output_file = output_file or self.output_file
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(self.scraped_data, f, ensure_ascii=False, indent=4)
+        self.logger.info(f"Successfully exported data to {output_file}")
+        return output_file
 
     def _polite_sleep(self):
         with self.request_lock:
@@ -118,12 +140,6 @@ class Scraper:
                     if url not in self.visited_urls and len(self.visited_urls) + len(queue) < max_pages:
                         queue.append(url)
 
-    def export_to_json(self):
-        """Saves the scraped data into a formatted JSON file."""
-        with open(self.output_file, "w", encoding="utf-8") as f:
-            json.dump(self.scraped_data, f, ensure_ascii=False, indent=4)
-        self.logger.info(f"Successfully exported data to {self.output_file}")
-
     def _normalize_url(self, url: str) -> str:
         """Normalize a URL by resolving relative paths, stripping fragments, and normalizing the path."""
         if not url:
@@ -179,3 +195,12 @@ class Scraper:
         )
         target = main_area if main_area else content_soup
         return target.get_text(separator=" ", strip=True)
+
+
+def scrape_and_build_chunks(url: str, output_file: str = "website_data.json", limit: int = 10000) -> tuple:
+    """Convenience function to crawl website and build chunks in one call."""
+    scraper = Scraper(base_url=url, output_file=output_file)
+    scraper.crawl(max_pages=limit)
+    scraper.export_to_json()
+    from processor.processor import build_chunk_cache
+    return build_chunk_cache(output_file)

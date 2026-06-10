@@ -8,7 +8,7 @@ from processor.processor import (
     display_results,
     build_chunk_cache,
 )
-from datacollector.crawler import Scraper
+import utils.data_utils as data_utils
 
 app = typer.Typer(rich_markup_mode="markdown")
 
@@ -78,23 +78,42 @@ def scrape(
         typer.secho("Error: No URL provided.", fg=typer.colors.RED, err=True)
         raise typer.Abort()
 
-    output_file = typer.prompt("Enter name to save data to", default=output).strip()
+    output_file = output
     if not output_file.endswith(".json"):
         output_file += ".json"
 
-    final_output_path = os.path.join("database", output_file)
-    os.makedirs("database", exist_ok=True)
-
-    scraper = Scraper(base_url=url, output_file=final_output_path)
-
     typer.echo(f"Starting crawl on: {url}...")
-    scraper.crawl(max_pages=limit)
-    scraper.export_to_json()
+    chunk_count, saved_path = data_utils.scrape(url=url, output=output_file, limit=limit)
+    typer.secho(f"Scraping completed. Chunks saved to {saved_path}", fg=typer.colors.GREEN, bold=True)
 
-    typer.secho(f"Scraping completed. Data saved to {final_output_path}", fg=typer.colors.GREEN, bold=True)
 
-    typer.echo("Building chunks and embeddings...")
-    chunk_count, saved_path = build_chunk_cache(final_output_path)
+@app.command()
+def pdf_scan(
+    path: Annotated[Optional[str], typer.Argument(help="Path to PDF file or directory")] = None,
+    output: Annotated[str, typer.Option("--output", "-o", help="Output JSON filename")] = "pdf_data.json",
+):
+    """
+    **PDF Scanner**
+    
+    Extracts text from PDF files and builds document chunks.
+    """
+    if not path:
+        path = typer.prompt("Enter the PDF file or directory path").strip()
+
+    if not path:
+        typer.secho("Error: No path provided.", fg=typer.colors.RED, err=True)
+        raise typer.Abort()
+
+    if not os.path.exists(path) or not path.lower().endswith(".pdf"):
+        typer.secho(f"Error: Invalid PDF path: {path}", fg=typer.colors.RED, err=True)
+        raise typer.Abort()
+
+    output_file = output
+    if not output_file.endswith(".json"):
+        output_file = f"{output_file}.json"
+
+    typer.echo(f"Scanning PDF: {path}...")
+    chunk_count, saved_path = data_utils.pdf_scan(path=path, output=output_file)
     typer.secho(f"Saved {chunk_count} chunks to {saved_path}", fg=typer.colors.GREEN, bold=True)
 
 
