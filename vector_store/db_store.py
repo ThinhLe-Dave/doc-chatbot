@@ -9,6 +9,17 @@ import numpy as np
 from utils.logging import debug
 from vector_store.db_config import DatabaseConfig
 from vector_store.index import SearchResult
+from utils.db_utils import (
+    SQL_CREATE_DOCUMENTS_TABLE,
+    SQL_CREATE_CHUNKS_TABLE,
+    SQL_CREATE_EMBEDDINGS_TABLE_TEMPLATE,
+    SQL_INSERT_DOCUMENT,
+    SQL_INSERT_CHUNK,
+    SQL_INSERT_EMBEDDING,
+    SQL_SEARCH_SIMILAR,
+    SQL_GET_CHUNK_BY_ID,
+    SQL_COUNT_CHUNKS,
+)
 
 
 class PostgresVectorStoreError(Exception):
@@ -41,30 +52,9 @@ class PostgresVectorStore:
         """Create tables if they don't exist."""
         conn = self._get_connection()
         with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS documents (
-                    id TEXT PRIMARY KEY,
-                    source TEXT,
-                    title TEXT,
-                    path JSONB,
-                    metadata JSONB
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS chunks (
-                    id TEXT PRIMARY KEY,
-                    document_id TEXT REFERENCES documents(id),
-                    content TEXT,
-                    path JSONB,
-                    metadata JSONB
-                )
-            """)
-            cur.execute(f"""
-                CREATE TABLE IF NOT EXISTS embeddings (
-                    chunk_id TEXT PRIMARY KEY REFERENCES chunks(id),
-                    embedding VECTOR({self._embedding_dimension})
-                )
-            """)
+            cur.execute(SQL_CREATE_DOCUMENTS_TABLE)
+            cur.execute(SQL_CREATE_CHUNKS_TABLE)
+            cur.execute(SQL_CREATE_EMBEDDINGS_TABLE_TEMPLATE.format(dim=self._embedding_dimension))
             conn.commit()
 
     def load(self) -> "PostgresVectorStore":
@@ -101,44 +91,16 @@ class PostgresVectorStore:
                 for chunk, embedding in zip(batch, batch_embeddings):
                     if chunk.document_id not in seen_docs:
                         cur.execute(
-                            """
-                            INSERT INTO documents (id, source, title, path, metadata)
-                            VALUES (%s, %s, %s, %s, %s)
-                            ON CONFLICT (id) DO NOTHING
-                            """,
-                            (
-                                chunk.document_id,
-                                chunk.metadata.get("source", ""),
-                                chunk.metadata.get("title", ""),
-                                json.dumps(chunk.path),
-                                json.dumps(chunk.metadata),
-                            )
+                            SQL_INSERT_DOCUMENT,
+                            (chunk.document_id, chunk.metadata.get("source", ""), chunk.metadata.get("title", ""), json.dumps(chunk.path), json.dumps(chunk.metadata)),
                         )
                         seen_docs.add(chunk.document_id)
                     cur.execute(
-                        """
-                        INSERT INTO chunks (id, document_id, content, path, metadata)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (id) DO UPDATE SET
-                            content = EXCLUDED.content,
-                            path = EXCLUDED.path,
-                            metadata = EXCLUDED.metadata
-                        """,
-                        (
-                            chunk.id,
-                            chunk.document_id,
-                            chunk.content,
-                            json.dumps(chunk.path),
-                            json.dumps(chunk.metadata),
-                        )
+                        SQL_INSERT_CHUNK,
+                        (chunk.id, chunk.document_id, chunk.content, json.dumps(chunk.path), json.dumps(chunk.metadata)),
                     )
                     cur.execute(
-                        """
-                        INSERT INTO embeddings (chunk_id, embedding)
-                        VALUES (%s, %s)
-                        ON CONFLICT (chunk_id) DO UPDATE SET
-                            embedding = EXCLUDED.embedding
-                        """,
+                        SQL_INSERT_EMBEDDING,
                         (chunk.id, embedding.tolist())
                     )
 
@@ -158,13 +120,7 @@ class PostgresVectorStore:
 
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT c.id, c.document_id, embedding <=> %s::vector AS score
-                FROM embeddings e
-                JOIN chunks c ON e.chunk_id = c.id
-                ORDER BY score ASC
-                LIMIT %s
-                """,
+                SQL_SEARCH_SIMILAR,
                 (query_embedding.tolist(), top_k * 4)
             )
             results = []
@@ -192,33 +148,13 @@ class PostgresVectorStore:
             for chunk in iter_chunks_from_json(chunk_file):
                 if chunk.document_id not in seen_docs:
                     cur.execute(
-                        """
-                        INSERT INTO documents (id, source, title, path, metadata)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (id) DO NOTHING
-                        """,
-                        (
-                            chunk.document_id,
-                            chunk.metadata.get("source", ""),
-                            chunk.metadata.get("title", ""),
-                            json.dumps(chunk.path),
-                            json.dumps(chunk.metadata),
-                        )
+                        SQL_INSERT_DOCUMENT,
+                        (chunk.document_id, chunk.metadata.get("source", ""), chunk.metadata.get("title", ""), json.dumps(chunk.path), json.dumps(chunk.metadata)),
                     )
                     seen_docs.add(chunk.document_id)
                 cur.execute(
-                    """
-                    INSERT INTO chunks (id, document_id, content, path, metadata)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO NOTHING
-                    """,
-                    (
-                        chunk.id,
-                        chunk.document_id,
-                        chunk.content,
-                        json.dumps(chunk.path),
-                        json.dumps(chunk.metadata),
-                    )
+                    SQL_INSERT_CHUNK,
+                    (chunk.id, chunk.document_id, chunk.content, json.dumps(chunk.path), json.dumps(chunk.metadata)),
                 )
                 count += 1
             conn.commit()
@@ -232,7 +168,7 @@ class PostgresVectorStore:
             chunks = []
             for chunk_id in chunk_ids:
                 cur.execute(
-                    "SELECT id, document_id, content, path, metadata FROM chunks WHERE id = %s",
+                    SQL_GET_CHUNK_BY_ID,
                     (chunk_id,)
                 )
                 row = cur.fetchone()
@@ -257,7 +193,7 @@ class PostgresVectorStore:
         """Return total number of chunks in database."""
         conn = self._get_connection()
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM chunks")
+            cur.execute(SQL_COUNT_CHUNKS)
             return int(cur.fetchone()[0])
 
     def close(self) -> None:

@@ -25,8 +25,6 @@ HTML_PATH = BASE_DIR / "web_frontend" / "index.html"
 
 class SearchRequest(BaseModel):
     query: str
-    input: str = "database/research_data.json"
-    top_k: int = 10
     chunk_k: int = 3
     min_score: float = 0.01
     hybrid: bool = True
@@ -45,16 +43,13 @@ def search(req: SearchRequest):
     try:
         results = recommend_documents(
             query=req.query,
-            input_file=req.input,
-            top_k=req.top_k,
+            top_k=10000,
             chunk_k=req.chunk_k,
             min_score=req.min_score,
             hybrid=req.hybrid,
             hybrid_weight=req.hybrid_weight,
             categories=req.categories,
         )
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -77,22 +72,13 @@ def index():
 @app.get("/api/config", response_class=JSONResponse)
 def get_config():
     from vector_store.db_config import DatabaseConfig
-    sources_dir = BASE_DIR / "database"
-    available_sources = []
-    if sources_dir.exists():
-        available_sources = sorted(
-            f.name for f in sources_dir.glob("*.json") if not f.name.endswith("_chunks.json")
-        )
     db_config = DatabaseConfig.from_config_file()
     return {
         "defaults": {
-            "input": "database/research_data.json",
-            "top_k": 10,
             "chunk_k": 3,
             "min_score": 0.01,
             "hybrid": True,
             "hybrid_weight": 0.4,
         },
-        "available_sources": available_sources,
         "database_available": db_config.is_configured(),
     }

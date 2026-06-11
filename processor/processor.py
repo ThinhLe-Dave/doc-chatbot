@@ -1,18 +1,16 @@
-import json
-import os
 import re
 from typing import List, Optional
 
 import numpy as np
 import typer
 
-from chunker.document import load_documents_from_json, deduplicate_chunks
+from chunker.document import deduplicate_chunks
 from chunker.chunker import Chunk
 from embedding.embedding import embed_texts, get_embedding_model
 from utils.logging import debug
 from vector_store.db_store import PostgresVectorStore, PostgresVectorStoreError
 from vector_store.db_config import DatabaseConfig
-
+from utils.db_utils import SQL_GET_CHUNKS_BY_IDS, SQL_GET_CHUNK_CONTENT
 
 def _truncate_preview(text: str, max_len: int = 220) -> str:
     if len(text) <= max_len:
@@ -64,6 +62,7 @@ def _extract_primary_text(chunks: list, item: dict) -> str:
 
 
 def display_results(results: List[dict], as_json: bool = False) -> None:
+    import json
     if as_json:
         typer.echo(json.dumps(results, ensure_ascii=False, indent=2))
         return
@@ -76,54 +75,14 @@ def display_results(results: List[dict], as_json: bool = False) -> None:
         _format_single_result(index, item)
 
 
-def build_chunk_cache(input_file: str, output_file: Optional[str] = None) -> tuple:
-    from chunker.chunker import write_chunks_to_file
-
-    debug(f"build_chunk_cache input={input_file} output={output_file}", "processor")
-    documents = load_documents_from_json(input_file)
-    debug(f"loaded {len(documents)} documents", "processor")
-    if not documents:
-        raise ValueError("No documents found in the input file.")
-
-    output_path = output_file or get_chunk_file_path(input_file)
-    total_chunks = write_chunks_to_file(documents, output_path)
-
-    if total_chunks == 0:
-        raise ValueError("No chunks were created from the loaded documents.")
-
-    debug("loading embedding model", "embedding.model")
-    model = get_embedding_model()
-
-    db_config = DatabaseConfig.from_config_file()
-    if not db_config.is_configured():
-        raise PostgresVectorStoreError("Database not configured. Add [database] section to config.cfg")
-    debug("building embedding cache via PostgresVectorStore", "db.store")
-    store = PostgresVectorStore(config=db_config, chunk_file=output_path)
-    store.build(model)
-
-    return total_chunks, output_path
-
-
-def get_chunk_file_path(input_file: str) -> str:
-    base = os.path.splitext(input_file)[0]
-    return f"{base}_chunks.json"
-
-
-def _resolve_chunk_store(input_file: str, chunk_file: str):
+def _resolve_chunk_store():
     db_config = DatabaseConfig.from_config_file()
     if not db_config.is_configured():
         raise PostgresVectorStoreError("Database not configured. Add [database] section to config.cfg")
     debug("loading from PostgresVectorStore", "db.store")
-    store = PostgresVectorStore(config=db_config, chunk_file=chunk_file)
-    try:
-        store.load()
-        return store
-    except (PostgresVectorStoreError, FileNotFoundError):
-        debug("DB load failed, building", "processor")
-        build_chunk_cache(input_file, chunk_file)
-        store = PostgresVectorStore(config=db_config, chunk_file=chunk_file)
-        store.load()
-        return store
+    store = PostgresVectorStore(config=db_config)
+    store.load()
+    return store
 
 
 def _encode_query(query: str) -> np.ndarray:
@@ -177,7 +136,7 @@ def _rank_results(
         store.load()
         with store._conn.cursor() as cur:
             cur.execute(
-                "SELECT id, document_id, content, path, metadata FROM chunks WHERE id = ANY(%s)",
+                SQL_GET_CHUNKS_BY_IDS,
                 (list(candidate_ids),)
             )
             for row in cur.fetchall():
@@ -235,7 +194,6 @@ def _rank_results(
 
 def recommend_documents(
     query: str,
-    input_file: str,
     top_k: int = 10,
     chunk_k: int = 3,
     min_score: float = 0.01,
@@ -249,11 +207,11 @@ def recommend_documents(
     if not db_config.is_configured():
         raise PostgresVectorStoreError("Database not configured. Add [database] section to config.cfg")
 
-    debug(f"recommend query={query!r} input={input_file} top_k={top_k} chunk_k={chunk_k} min_score={min_score} hybrid={hybrid} categories={categories}", "processor")
+    debug(f"recommend query={query!r} top_k={top_k} chunk_k={chunk_k} min_score={min_score} hybrid={hybrid} categories={categories}", "processor")
 
-    store = _resolve_chunk_store(input_file, get_chunk_file_path(input_file))
+    store = _resolve_chunk_store()
     if store.chunk_count == 0:
-        raise ValueError("Could not load any chunks from the cache.")
+        raise ValueError("Could not load any chunks from the database.")
 
     query_embedding = _encode_query(query)
     candidate_ids, scores = _search_and_score(store, query_embedding, top_k, min_score)
@@ -278,7 +236,7 @@ def _compute_keyword_scores(chunk_ids: set, query_terms: set) -> dict:
             store.load()
             with store._conn.cursor() as cur:
                 for chunk_id in chunk_ids:
-                    cur.execute("SELECT content FROM chunks WHERE id = %s", (chunk_id,))
+                    cur.execute(SQL_GET_CHUNK_CONTENT, (chunk_id,))
                     row = cur.fetchone()
                     if row:
                         text = row[0].lower()

@@ -2,6 +2,7 @@ import concurrent.futures
 import json
 import logging
 import time
+import uuid
 from collections import deque
 from threading import Lock, local
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -86,10 +87,12 @@ class Scraper(DataCollector):
                 new_urls.append(normalized)
 
         page_content = {
+            "id": str(uuid.uuid4()),
             "url": url,
+            "source": url,
             "title": soup.title.string.strip() if soup.title and soup.title.string else "No Title",
             "headers": [h.get_text(strip=True) for h in soup.find_all(["h1", "h2", "h3"])],
-            "body": self._extract_main_content(soup),
+            "content": self._extract_main_content(soup),
         }
 
         with self.scraped_data_lock:
