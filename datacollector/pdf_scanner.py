@@ -1,7 +1,10 @@
+import io
 import json
 import logging
 import os
+import re
 import shutil
+import unicodedata
 from pathlib import Path
 from typing import List, Optional
 
@@ -17,6 +20,163 @@ logger = logging.getLogger(__name__)
 
 PDF_SERVE_DIR = Path(__file__).resolve().parent.parent / "pdfs"
 
+_COMMON_SHORT_WORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "but",
+    "by",
+    "can",
+    "do",
+    "for",
+    "from",
+    "go",
+    "had",
+    "has",
+    "he",
+    "her",
+    "him",
+    "his",
+    "if",
+    "in",
+    "is",
+    "it",
+    "me",
+    "my",
+    "no",
+    "not",
+    "of",
+    "on",
+    "or",
+    "our",
+    "she",
+    "so",
+    "than",
+    "that",
+    "the",
+    "then",
+    "this",
+    "to",
+    "up",
+    "us",
+    "was",
+    "we",
+    "were",
+    "will",
+    "with",
+    "you",
+}
+_SINGLE_LETTER_WORDS = {"a", "I"}
+_ACRONYMS = {"AI", "EEA", "EU", "TFEU", "UK", "US"}
+_UPPERCASE_SUFFIXES = {"TION", "TIONS", "MENT", "MENTS", "SHIP", "SHIPS", "ENCE", "ENCES", "ANCE", "ANCES"}
+_ALPHA_TOKEN_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")
+_JOIN_SPLIT_WORD_RE = re.compile(r"\b([A-Za-zÀ-ÖØ-öø-ÿ]{1,30})\s+([A-Za-zÀ-ÖØ-öø-ÿ]{1,30})\b")
+
+
+def _alpha_tokens(text: str) -> List[str]:
+    return _ALPHA_TOKEN_RE.findall(text or "")
+
+
+def _is_suspicious_token(token: str) -> bool:
+    if token in _SINGLE_LETTER_WORDS:
+        return False
+    if token.isupper() and len(token) <= 3:
+        return False
+    if len(token) == 1:
+        return True
+    if len(token) <= 3 and token.lower() not in _COMMON_SHORT_WORDS:
+        return True
+    return False
+
+
+def _looks_like_broken_pdf_text(text: str) -> bool:
+    tokens = _alpha_tokens(text)
+    if len(tokens) < 10:
+        return False
+
+    suspicious_count = sum(1 for token in tokens if _is_suspicious_token(token))
+    suspicious_ratio = suspicious_count / len(tokens)
+    return suspicious_ratio > 0.06
+
+
+def _should_join_split_words(left: str, right: str) -> bool:
+    left_lower = left.lower()
+    right_lower = right.lower()
+
+    if right == "a" and len(left) <= 3 and left_lower not in _COMMON_SHORT_WORDS:
+        return True
+    if right == "A" and left.isupper() and len(left) > 3:
+        return True
+    if left == "A" and right[:1].isupper() and len(right) > 1:
+        return False
+    if left in _SINGLE_LETTER_WORDS or right in _SINGLE_LETTER_WORDS:
+        return False
+    if len(left) == 1 and left.isupper() and left not in {"A", "I"} and len(right) > 3:
+        return True
+    if left.isupper() and len(left) <= 3:
+        if left_lower in _COMMON_SHORT_WORDS or left in _ACRONYMS:
+            return False
+        if right[:1].isupper() and len(right) > 3:
+            return True
+        if right[:1].islower():
+            return False
+    if right.isupper() and len(right) <= 3:
+        if right_lower in _COMMON_SHORT_WORDS or right in _ACRONYMS:
+            return False
+        if left.isupper() and len(left) > 3:
+            return True
+        if left[:1].islower():
+            return False
+    if left_lower in _COMMON_SHORT_WORDS and len(left) <= 3:
+        return False
+    if right_lower in _COMMON_SHORT_WORDS and len(right) <= 3:
+        return False
+    if len(right) == 1 and right.isupper() and left.isupper():
+        return True
+    if right.isupper() and right in _UPPERCASE_SUFFIXES:
+        return left.isupper() and len(left) > 3
+    if len(left) <= 3 and len(right) <= 30 and left_lower not in _COMMON_SHORT_WORDS:
+        if left.isupper() and right[:1].islower():
+            return False
+        return True
+    if len(right) <= 3 and len(left) <= 30 and right_lower not in _COMMON_SHORT_WORDS:
+        return True
+    return False
+
+
+def _join_split_words(text: str) -> str:
+    def replace(match: re.Match) -> str:
+        left, right = match.groups()
+        if _should_join_split_words(left, right):
+            return f"{left}{right}"
+        return match.group(0)
+
+    for _ in range(6):
+        updated = _JOIN_SPLIT_WORD_RE.sub(replace, text)
+        if updated == text:
+            return updated
+        text = updated
+    return text
+
+
+def _clean_extracted_text(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text or "")
+    text = text.replace("\x00", "")
+    text = text.replace("  ", " ")
+    text = _join_split_words(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r" {2,}", " ", text)
+    text = re.sub(r"\s+([,.;:!?%\)\]])", r"\1", text)
+    text = re.sub(r"([\(\[\{‘“])\s+", r"\1", text)
+    return text.strip()
+
 
 class PDFScanner(DataCollector):
     def __init__(
@@ -24,9 +184,16 @@ class PDFScanner(DataCollector):
         output_file: str = "pdf_data.json",
         chunk_size: int = 500,
         chunk_overlap: int = 50,
+        use_ocr: Optional[bool] = None,
+        ocr_language: str = "eng",
+        ocr_dpi: int = 200,
     ):
         super().__init__(output_file)
         self.chunker = Chunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        self.use_ocr = use_ocr
+        self.ocr_language = ocr_language
+        self.ocr_dpi = ocr_dpi
+        self._ocr_unavailable_logged = False
 
     def collect(self, source: str, **kwargs) -> List[Document]:
         return self.scan(source, **kwargs)
@@ -61,13 +228,17 @@ class PDFScanner(DataCollector):
         self.documents = []
         for page_num, page in enumerate(reader.pages, start=1):
             try:
-                text = page.extract_text()
+                text, extraction_method = self._extract_page_text(pdf_path, page_num - 1, page)
                 if text and text.strip():
                     document = Document.create(
                         source=f"{base_source}#page={page_num}",
                         title=f"{title} (page {page_num})",
                         content=text,
-                        metadata={"page": page_num, "total_pages": len(reader.pages)},
+                        metadata={
+                            "page": page_num,
+                            "total_pages": len(reader.pages),
+                            "extraction_method": extraction_method,
+                        },
                     )
                     self.documents.append(document)
             except Exception as e:
@@ -75,6 +246,63 @@ class PDFScanner(DataCollector):
 
         logger.info(f"Extracted {len(self.documents)} pages from {pdf_path}")
         return self.documents
+
+    def _extract_page_text(self, pdf_path: str, page_index: int, page) -> tuple[str, str]:
+        raw_text = page.extract_text() or ""
+        cleaned_text = _clean_extracted_text(raw_text)
+
+        if self.use_ocr is True:
+            ocr_text = self._ocr_page(pdf_path, page_index)
+            if ocr_text and ocr_text.strip():
+                return _clean_extracted_text(ocr_text), "ocr"
+            if cleaned_text and cleaned_text.strip():
+                return cleaned_text, "pypdf"
+            return "", "empty"
+
+        if cleaned_text and cleaned_text.strip() and not _looks_like_broken_pdf_text(raw_text):
+            return cleaned_text, "pypdf"
+
+        ocr_text = self._ocr_page(pdf_path, page_index)
+        if ocr_text and ocr_text.strip():
+            return _clean_extracted_text(ocr_text), "ocr"
+        if cleaned_text and cleaned_text.strip():
+            return cleaned_text, "pypdf-cleaned"
+        return "", "empty"
+
+    def _ocr_page(self, pdf_path: str, page_index: int) -> str:
+        try:
+            import fitz
+            import pytesseract
+            from PIL import Image
+        except Exception as e:
+            self._log_ocr_unavailable(e)
+            return ""
+
+        try:
+            with fitz.open(pdf_path) as document:
+                page = document.load_page(page_index)
+                scale = self.ocr_dpi / 72
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+                image_bytes = pixmap.tobytes("png")
+
+            with Image.open(io.BytesIO(image_bytes)) as image:
+                return pytesseract.image_to_string(
+                    image,
+                    lang=self.ocr_language,
+                    config="--oem 3 --psm 6",
+                )
+        except Exception as e:
+            logger.warning(f"OCR failed for page {page_index + 1}: {e}")
+            return ""
+
+    def _log_ocr_unavailable(self, error: Exception) -> None:
+        if self._ocr_unavailable_logged:
+            return
+        self._ocr_unavailable_logged = True
+        logger.warning(
+            "OCR fallback is unavailable. Install pytesseract, pillow, pymupdf, and the tesseract binary to scan image-only PDFs. "
+            f"Original error: {error}"
+        )
 
     def export_to_json(self, output_file: str = None) -> str:
         """Export extracted documents to JSON file."""
@@ -92,7 +320,6 @@ class PDFScanner(DataCollector):
         """Build chunk cache from extracted documents."""
         if output_file is None:
             output_file = self.output_file
-        # Derive chunk file path from the data file path
         chunk_file = get_chunk_file_path(output_file)
 
         if not self.documents:

@@ -72,6 +72,19 @@ def search(
     display_results(results, json_output)
 
 
+def build_chunk_cache(input_file: str, chunk_file: str):
+    from chunker.document import load_documents_from_json
+    from chunker.chunker import write_chunks_to_file
+    from embedding.embedding import get_embedding_model
+    from vector_store.store import VectorStore
+
+    documents = load_documents_from_json(input_file)
+    write_chunks_to_file(documents, chunk_file)
+    store = VectorStore(chunk_file)
+    model = get_embedding_model()
+    return store.build(model)
+
+
 @app.command()
 def scrape(
     url: Optional[str] = typer.Argument(None, help="The starting URL to scrape"),
@@ -136,10 +149,13 @@ def scrape(
 @app.command()
 def pdf_scan(
     path: Annotated[Optional[str], typer.Argument(help="Path to PDF file or directory")] = None,
+    use_ocr: Annotated[Optional[bool], typer.Option("--ocr/--no-ocr", help="Use OCR fallback for scanned or badly spaced PDFs")] = None,
+    ocr_language: Annotated[str, typer.Option("--ocr-language", help="Tesseract language code for OCR")] = "eng",
+    ocr_dpi: Annotated[int, typer.Option("--ocr-dpi", help="Rendering DPI for OCR")] = 200,
 ):
     """
     **PDF Scanner**
-    
+
     Extracts text from PDF files and builds document chunks directly in PostgreSQL.
     """
     db_config = DatabaseConfig.from_config_file()
@@ -158,7 +174,7 @@ def pdf_scan(
 
     typer.echo(f"Scanning PDF: {path}...")
 
-    scanner = PDFScanner()
+    scanner = PDFScanner(use_ocr=use_ocr, ocr_language=ocr_language, ocr_dpi=ocr_dpi)
     documents = scanner.scan_pdf(path)
 
     model = get_embedding_model()
