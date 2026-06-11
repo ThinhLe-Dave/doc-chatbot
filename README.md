@@ -6,6 +6,7 @@ A lightweight document search and chatbot-style retrieval system built from scra
 - chunking documents for semantic search
 - building embedding caches with Sentence Transformers
 - querying documents using cosine similarity ranking
+- **PostgreSQL storage with pgvector for production deployments**
 - an optional FastAPI-based web UI for browser search
 - an optional Jupyter notebook interface
 
@@ -17,17 +18,33 @@ A lightweight document search and chatbot-style retrieval system built from scra
 - `embedding/` — embedding model loading, encoding, and persistence helpers
 - `datacollector/` — web scraping crawler and PDF scanner
 - `utils/` — utility functions including data utilities
+- `vector_store/` — Vector store implementations (file-based and PostgreSQL)
 - `database/` — example scraped data and cache files
 - `requirements.txt` — required Python dependencies
 
-## Setup
+## PostgreSQL Setup
 
-```bash
-cd /Users/thinhphu/Desktop/python/doc-chatbot
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+To use PostgreSQL for vector storage (recommended for production):
+
+1. Install PostgreSQL 13+ with pgvector extension:
+   ```sql
+   CREATE EXTENSION IF NOT EXISTS vector;
+   ```
+
+2. Configure connection in `config/config.cfg`:
+   ```ini
+   [database]
+   host = localhost
+   port = 5432
+   name = docchatbot
+   user = docuser
+   # password = your_password_here
+   ```
+
+3. Or set environment variable:
+   ```bash
+   export DATABASE_URL="postgresql://user:password@localhost:5432/docchatbot"
+   ```
 
 ## Usage
 
@@ -37,24 +54,21 @@ pip install -r requirements.txt
 python app.py search "your query here"
 ```
 
-You can specify the scraped JSON file and ranking options:
-
-```bash
-python app.py search "how does X work" --input database/research_data.json --top-k 5 --chunk-k 3 --min-score 0.1
-```
+PostgreSQL is used automatically when configured in `config/config.cfg`.
 
 ### Build document chunks and embeddings
+
+Build chunks and embeddings (stored in PostgreSQL when configured):
 
 ```bash
 python app.py build-chunks --input database/research_data.json
 ```
 
-This command:
+### Migrate existing chunks to PostgreSQL
 
-1. loads scraped JSON documents
-2. creates text chunks
-3. builds an embedding cache using `sentence-transformers`
-4. saves chunk IDs and embedding matrices alongside the chunk file
+```bash
+python app.py migrate --input "database/*_chunks.json"
+```
 
 ### Scrape a website
 
@@ -73,7 +87,6 @@ The scraped output is saved under `database/`.
 Then open `http://127.0.0.1:8000`.
 
 To run on a custom address:
-
 ```bash
 ./run.sh serve 8000 0.0.0.0
 ```
@@ -87,16 +100,16 @@ To run on a custom address:
 Open the URL shown in the terminal and navigate to `web_frontend/notebook.ipynb`.
 
 To run on a custom address:
-
 ```bash
 ./run.sh notebook 8888 0.0.0.0
 ```
 
 ## Notes
 
-- The current embedding model is `paraphrase-multilingual-MiniLM-L12-v2` from Sentence Transformers.
+- The current embedding model is `paraphrase-multilingual-MiniLM-L12-v2` from Sentence Transformers (384 dimensions).
 - The search flow uses chunked document embeddings and a cosine similarity ranking over top results.
 - If you hit memory issues during embedding generation, reduce the number of chunks or run on a machine with more RAM.
+- When using PostgreSQL, source documents remain in JSON files; only chunks and embeddings are migrated.
 
 ## Development
 

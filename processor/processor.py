@@ -1,16 +1,17 @@
 import json
 import os
 import re
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 import typer
 
 from chunker.document import load_documents_from_json, deduplicate_chunks
-from chunker.chunker import get_chunk_file_path
+from chunker.chunker import Chunk
 from embedding.embedding import embed_texts, get_embedding_model
 from utils.logging import debug
-from vector_store.store import StaleCacheError, VectorStore
+from vector_store.db_store import PostgresVectorStore, PostgresVectorStoreError
+from vector_store.db_config import DatabaseConfig
 
 
 def _truncate_preview(text: str, max_len: int = 220) -> str:
@@ -92,23 +93,35 @@ def build_chunk_cache(input_file: str, output_file: Optional[str] = None) -> tup
 
     debug("loading embedding model", "embedding.model")
     model = get_embedding_model()
-    debug("building embedding cache via VectorStore", "vector.store")
-    store = VectorStore(output_path)
+
+    db_config = DatabaseConfig.from_config_file()
+    if not db_config.is_configured():
+        raise PostgresVectorStoreError("Database not configured. Add [database] section to config.cfg")
+    debug("building embedding cache via PostgresVectorStore", "db.store")
+    store = PostgresVectorStore(config=db_config, chunk_file=output_path)
     store.build(model)
 
     return total_chunks, output_path
 
 
-def _resolve_chunk_store(input_file: str, chunk_file: str) -> VectorStore:
-    store = VectorStore(chunk_file)
+def get_chunk_file_path(input_file: str) -> str:
+    base = os.path.splitext(input_file)[0]
+    return f"{base}_chunks.json"
+
+
+def _resolve_chunk_store(input_file: str, chunk_file: str):
+    db_config = DatabaseConfig.from_config_file()
+    if not db_config.is_configured():
+        raise PostgresVectorStoreError("Database not configured. Add [database] section to config.cfg")
+    debug("loading from PostgresVectorStore", "db.store")
+    store = PostgresVectorStore(config=db_config, chunk_file=chunk_file)
     try:
         store.load()
         return store
-    except (FileNotFoundError, StaleCacheError):
-        debug("rebuilding stale cache", "processor")
-        chunk_count, _ = build_chunk_cache(input_file, chunk_file)
-        typer.secho(f"Rebuilt {chunk_count} chunks in {chunk_file}", fg=typer.colors.GREEN)
-        store = VectorStore(chunk_file)
+    except (PostgresVectorStoreError, FileNotFoundError):
+        debug("DB load failed, building", "processor")
+        build_chunk_cache(input_file, chunk_file)
+        store = PostgresVectorStore(config=db_config, chunk_file=chunk_file)
         store.load()
         return store
 
@@ -119,27 +132,23 @@ def _encode_query(query: str) -> np.ndarray:
 
 
 def _search_and_score(
-    store: VectorStore,
+    store: PostgresVectorStore,
     query_embedding: np.ndarray,
     top_k: int,
     min_score: float,
-) -> Tuple[set, np.ndarray]:
+) -> tuple:
     top_k_chunks = min(max(top_k * 24, top_k), store.chunk_count)
     search_results = store.search(query_embedding, top_k=top_k_chunks, min_score=0.0)
 
-    candidate_indices = {r.chunk_index for r in search_results}
-    scores = np.zeros(store.chunk_count, dtype=np.float32)
-    for r in search_results:
-        scores[r.chunk_index] = r.score
-
-    debug(f"candidate_indices={len(candidate_indices)}", "processor")
-    return candidate_indices, scores
+    chunk_ids = {r.chunk_id for r in search_results}
+    scores = {r.chunk_id: r.score for r in search_results}
+    debug(f"candidate_indices={len(chunk_ids)}", "processor")
+    return chunk_ids, scores
 
 
 def _rank_results(
-    chunk_file: str,
-    candidate_indices: set,
-    scores: np.ndarray,
+    candidate_ids: set,
+    scores: dict,
     query: str,
     hybrid: bool,
     hybrid_weight: float,
@@ -148,15 +157,74 @@ def _rank_results(
     top_k: int,
     categories: Optional[List[str]],
 ) -> List[dict]:
+    from chunker.keywords import _STOP_WORDS
+
     query_terms = set(re.findall(r'\w+', query.lower()))
     debug(f"query_terms={sorted(query_terms)} hybrid={hybrid} hybrid_weight={hybrid_weight}", "processor")
 
-    document_chunks = _gather_candidate_chunks(
-        chunk_file, candidate_indices, scores, query_terms, hybrid, hybrid_weight, min_score, chunk_k, categories=categories
-    )
+    significant_query_terms = {term for term in query_terms if term not in _STOP_WORDS}
+    normalized_categories = {c.lower() for c in categories or []}
+    document_chunks: dict = {}
+
+    if hybrid and query_terms:
+        keyword_scores = _compute_keyword_scores(candidate_ids, query_terms)
+    else:
+        keyword_scores = {}
+
+    db_config = DatabaseConfig.from_config_file()
+    store = PostgresVectorStore(config=db_config)
+    try:
+        store.load()
+        with store._conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, document_id, content, path, metadata FROM chunks WHERE id = ANY(%s)",
+                (list(candidate_ids),)
+            )
+            for row in cur.fetchall():
+                chunk = Chunk(
+                    id=row[0],
+                    document_id=row[1],
+                    content=row[2],
+                    path=row[3] if row[3] else [],
+                    metadata=row[4] if row[4] else {},
+                )
+
+                chunk_meta_categories = [str(c).lower() for c in (chunk.metadata.get("categories") or [])]
+                if normalized_categories and not normalized_categories.intersection(chunk_meta_categories):
+                    continue
+
+                chunk_text = chunk.content.lower()
+                if significant_query_terms:
+                    if not any(term in chunk_text for term in significant_query_terms):
+                        continue
+
+                score_value = scores.get(chunk.id, 0.0)
+                if hybrid and chunk.id in keyword_scores:
+                    score_value = (1.0 - hybrid_weight) * score_value + hybrid_weight * keyword_scores[chunk.id]
+
+                if score_value < min_score:
+                    continue
+
+                document_id = chunk.document_id
+                entry = document_chunks.get(document_id)
+
+                if entry is None:
+                    entry = _build_document_entry(
+                        chunk_id=chunk.id,
+                        document_id=chunk.document_id,
+                        content=chunk.content,
+                        path=chunk.path,
+                        metadata=chunk.metadata,
+                        score_value=score_value,
+                        chunk_k=chunk_k,
+                    )
+                    document_chunks[document_id] = entry
+                else:
+                    _update_document_entry(entry, chunk.content, score_value, chunk_k)
+    finally:
+        store.close()
 
     for doc in document_chunks.values():
-        #debug(f"dedupe doc_id={doc.get('id')} chunks_before={len(doc['chunks'])}", "processor")
         doc["chunks"] = deduplicate_chunks(doc["chunks"])
 
     results = sorted(document_chunks.values(), key=lambda item: item["score"], reverse=True)
@@ -176,42 +244,48 @@ def recommend_documents(
     categories: Optional[List[str]] = None,
 ) -> List[dict]:
     hybrid_weight = max(0.0, min(1.0, hybrid_weight))
-    debug(f"recommend query={query!r} input={input_file} top_k={top_k} chunk_k={chunk_k} min_score={min_score} hybrid={hybrid} categories={categories}", "processor")
-    chunk_file = get_chunk_file_path(input_file)
-    debug(f"chunk_file={chunk_file} exists={os.path.exists(chunk_file)}", "processor")
-    if not os.path.exists(chunk_file):
-        raise FileNotFoundError(f"Chunk file not found: {chunk_file}. Run 'build-chunks' first.")
 
-    store = _resolve_chunk_store(input_file, chunk_file)
+    db_config = DatabaseConfig.from_config_file()
+    if not db_config.is_configured():
+        raise PostgresVectorStoreError("Database not configured. Add [database] section to config.cfg")
+
+    debug(f"recommend query={query!r} input={input_file} top_k={top_k} chunk_k={chunk_k} min_score={min_score} hybrid={hybrid} categories={categories}", "processor")
+
+    store = _resolve_chunk_store(input_file, get_chunk_file_path(input_file))
     if store.chunk_count == 0:
         raise ValueError("Could not load any chunks from the cache.")
 
     query_embedding = _encode_query(query)
-    candidate_indices, scores = _search_and_score(store, query_embedding, top_k, min_score)
+    candidate_ids, scores = _search_and_score(store, query_embedding, top_k, min_score)
 
     return _rank_results(
-        chunk_file, candidate_indices, scores, query, hybrid, hybrid_weight, min_score, chunk_k, top_k, categories
+        candidate_ids, scores, query, hybrid, hybrid_weight, min_score, chunk_k, top_k, categories
     )
 
 
-def _compute_keyword_scores(
-    chunk_file: str,
-    candidate_indices: set,
-    query_terms: set,
-) -> dict:
+def _compute_keyword_scores(chunk_ids: set, query_terms: set) -> dict:
     from chunker.keywords import _STOP_WORDS
-    from chunker.chunker import iter_chunk_batches_by_indices
 
     stop_removed = {term for term in query_terms if term not in _STOP_WORDS}
     if not stop_removed:
         stop_removed = query_terms
 
     keyword_scores: dict = {}
-    batch_iter = iter_chunk_batches_by_indices(chunk_file, candidate_indices, batch_size=128)
-    for index, chunk in batch_iter:
-        text = (chunk.content + " " + chunk.metadata.get("title", "")).lower()
-        matched = sum(1 for term in stop_removed if term in text)
-        keyword_scores[index] = matched / len(stop_removed) if stop_removed else 0.0
+    db_config = DatabaseConfig.from_config_file()
+    if db_config.is_configured():
+        store = PostgresVectorStore(config=db_config)
+        try:
+            store.load()
+            with store._conn.cursor() as cur:
+                for chunk_id in chunk_ids:
+                    cur.execute("SELECT content FROM chunks WHERE id = %s", (chunk_id,))
+                    row = cur.fetchone()
+                    if row:
+                        text = row[0].lower()
+                        matched = sum(1 for term in stop_removed if term in text)
+                        keyword_scores[chunk_id] = matched / len(stop_removed) if stop_removed else 0.0
+        finally:
+            store.close()
     return keyword_scores
 
 
@@ -231,64 +305,3 @@ def _build_document_entry(chunk_id, document_id, content, path, metadata, score_
 def _update_document_entry(entry, content, score_value, chunk_k):
     from chunker.document import update_document_entry
     update_document_entry(entry, content, score_value, chunk_k)
-
-
-def _gather_candidate_chunks(
-    chunk_file: str,
-    candidate_indices: set,
-    scores: np.ndarray,
-    query_terms: set,
-    hybrid: bool,
-    hybrid_weight: float,
-    min_score: float,
-    chunk_k: int,
-    categories: Optional[List[str]] = None,
-) -> dict:
-    from chunker.chunker import iter_chunk_batches_by_indices
-    from chunker.keywords import _STOP_WORDS
-    debug(f"gathering candidate chunks for {len(candidate_indices)} candidates", "processor")
-
-    normalized_categories = {c.lower() for c in categories or []}
-    significant_query_terms = {term for term in query_terms if term not in _STOP_WORDS}
-    document_chunks: dict = {}
-    keyword_scores: dict = {}
-
-    if hybrid and query_terms:
-        keyword_scores = _compute_keyword_scores(chunk_file, candidate_indices, query_terms)
-
-    chunk_iter = iter_chunk_batches_by_indices(chunk_file, candidate_indices, batch_size=128)
-    for index, chunk in chunk_iter:
-        chunk_meta_categories = [str(c).lower() for c in (chunk.metadata.get("categories") or [])]
-        if normalized_categories and not normalized_categories.intersection(chunk_meta_categories):
-            continue
-
-        chunk_text = chunk.content.lower()
-        if significant_query_terms:
-            if not any(f" {term} " in f" {chunk_text} " or f" {term}," in f" {chunk_text}," for term in significant_query_terms):
-                continue
-
-        score_value = float(scores[index])
-        if hybrid and index in keyword_scores:
-            score_value = (1.0 - hybrid_weight) * score_value + hybrid_weight * keyword_scores[index]
-
-        if score_value < min_score:
-            continue
-
-        document_id = chunk.document_id
-        entry = document_chunks.get(document_id)
-
-        if entry is None:
-            entry = _build_document_entry(
-                chunk_id=chunk.id,
-                document_id=chunk.document_id,
-                content=chunk.content,
-                path=chunk.path,
-                metadata=chunk.metadata,
-                score_value=score_value,
-                chunk_k=chunk_k,
-            )
-            document_chunks[document_id] = entry
-        else:
-            _update_document_entry(entry, chunk.content, score_value, chunk_k)
-
-    return document_chunks

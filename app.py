@@ -1,4 +1,5 @@
 import os
+import glob
 from typing import Annotated, List, Optional
 
 import typer
@@ -9,6 +10,10 @@ from processor.processor import (
     build_chunk_cache,
 )
 import utils.data_utils as data_utils
+from vector_store.db_config import DatabaseConfig
+from vector_store.db_store import PostgresVectorStore
+from chunker.chunker import iter_chunks_from_json
+from embedding.embedding import embed_texts, get_embedding_model
 
 app = typer.Typer(rich_markup_mode="markdown")
 
@@ -57,7 +62,7 @@ def build_chunks(
 ):
     """Build and save document chunks from a scraped JSON file."""
     chunk_count, saved_path = build_chunk_cache(input, output)
-    typer.secho(f"Saved {chunk_count} chunk records to {saved_path}", fg=typer.colors.GREEN)
+    typer.secho(f"Built {chunk_count} chunk records in PostgreSQL database", fg=typer.colors.GREEN)
 
 
 @app.command()
@@ -115,6 +120,100 @@ def pdf_scan(
     typer.echo(f"Scanning PDF: {path}...")
     chunk_count, saved_path = data_utils.pdf_scan(path=path, output=output_file)
     typer.secho(f"Saved {chunk_count} chunks to {saved_path}", fg=typer.colors.GREEN, bold=True)
+
+
+@app.command()
+def migrate(
+    input: Annotated[str, typer.Option("--input", "-i", help="Path to chunk JSON file or glob pattern")] = "database/*_chunks.json",
+):
+    """Migrate existing chunk files to PostgreSQL database."""
+    db_config = DatabaseConfig.from_config_file()
+    if not db_config.is_configured():
+        typer.secho("Database not configured. Add [database] section to config.cfg", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    chunk_files = glob.glob(input)
+    if not chunk_files:
+        typer.secho(f"No chunk files found matching: {input}", fg=typer.colors.YELLOW)
+        return
+
+    for chunk_file in chunk_files:
+        typer.echo(f"Migrating: {chunk_file}")
+        try:
+            store = PostgresVectorStore(config=db_config, chunk_file=chunk_file)
+            store.load()
+            migrate_chunks_to_db(chunk_file, store)
+            store.close()
+        except Exception as e:
+            typer.secho(f"Error migrating {chunk_file}: {e}", fg=typer.colors.RED, err=True)
+
+
+def migrate_chunks_to_db(chunk_file: str, store: PostgresVectorStore):
+    """Migrate chunks and embeddings from JSONL to PostgreSQL."""
+    import json
+    conn = store._conn
+    model = get_embedding_model()
+    seen_docs = set()
+
+    chunks = list(iter_chunks_from_json(chunk_file))
+    total = len(chunks)
+
+    for i, chunk in enumerate(chunks, start=1):
+        batch_texts = [chunk.content]
+        batch_embeddings = embed_texts(model, batch_texts)
+
+        embedding = batch_embeddings[0]
+        with conn.cursor() as cur:
+            if chunk.document_id not in seen_docs:
+                cur.execute(
+                    """
+                    INSERT INTO documents (id, source, title, path, metadata)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    (
+                        chunk.document_id,
+                        chunk.metadata.get("source", ""),
+                        chunk.metadata.get("title", ""),
+                        json.dumps(chunk.path),
+                        json.dumps(chunk.metadata),
+                    )
+                )
+                seen_docs.add(chunk.document_id)
+            cur.execute(
+                """
+                INSERT INTO chunks (id, document_id, content, path, metadata)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    content = EXCLUDED.content,
+                    path = EXCLUDED.path,
+                    metadata = EXCLUDED.metadata
+                """,
+                (
+                    chunk.id,
+                    chunk.document_id,
+                    chunk.content,
+                    json.dumps(chunk.path),
+                    json.dumps(chunk.metadata),
+                )
+            )
+            cur.execute(
+                """
+                INSERT INTO embeddings (chunk_id, embedding)
+                VALUES (%s, %s)
+                ON CONFLICT (chunk_id) DO UPDATE SET
+                    embedding = EXCLUDED.embedding
+                """,
+                (chunk.id, embedding.tolist())
+            )
+
+        if i % 100 == 0:
+            conn.commit()
+            if i % 1000 == 0 or i == total:
+                typer.echo(f"  Processed {i}/{total} chunks...")
+
+    conn.commit()
+    typer.secho(f"Migrated {total} chunks to database", fg=typer.colors.GREEN)
 
 
 if __name__ == "__main__":

@@ -76,6 +76,8 @@ Results often show the same document twice under `http://` and `https://` varian
 
 ## Fixed since last review
 
+- `web_frontend/fastapi_app.py`: Removed unused `use_db` parameter from `SearchRequest`
+- Removed `--use-db` from README.md documentation (PostgreSQL is used automatically when configured)
 - `app.py` reduced from 366→102 lines. Processing logic moved to `processor/processor.py`.
 - `embedding/embedding.py` now raises proper `MemoryError`, `ValueError`, `RuntimeError` instead of `typer.Abort`
 - `chunker/document.py` raises `MemoryError` (not `typer.Abort`)

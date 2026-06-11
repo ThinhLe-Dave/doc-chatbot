@@ -6,3 +6,4 @@ numpy
 beautifulsoup4
 requests
 pypdf
+psycopg[binary,pool]

@@ -56,8 +56,10 @@ class LowMemorySmokeTest(unittest.TestCase):
 
     def test_search_handles_low_memory_encoding(self):
         with patch("embedding.embedding.SentenceTransformer.encode", side_effect=MemoryError("Simulated low memory")):
-            with self.assertRaises(MemoryError):
-                app.build_chunk_cache(self.input_file, self.chunk_file)
+            with patch("vector_store.db_config.DatabaseConfig.is_configured", return_value=True):
+                with patch("vector_store.db_store.PostgresVectorStore.build", side_effect=MemoryError("Simulated low memory")):
+                    with self.assertRaises(MemoryError):
+                        app.build_chunk_cache(self.input_file, self.chunk_file)
 
 
 if __name__ == "__main__":

@@ -76,12 +76,14 @@ def index():
 
 @app.get("/api/config", response_class=JSONResponse)
 def get_config():
+    from vector_store.db_config import DatabaseConfig
     sources_dir = BASE_DIR / "database"
     available_sources = []
     if sources_dir.exists():
         available_sources = sorted(
             f.name for f in sources_dir.glob("*.json") if not f.name.endswith("_chunks.json")
         )
+    db_config = DatabaseConfig.from_config_file()
     return {
         "defaults": {
             "input": "database/research_data.json",
@@ -92,4 +94,5 @@ def get_config():
             "hybrid_weight": 0.4,
         },
         "available_sources": available_sources,
+        "database_available": db_config.is_configured(),
     }
