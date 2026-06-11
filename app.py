@@ -10,11 +10,14 @@ from processor.processor import (
 from chunker.chunker import Chunker
 from chunker.document import Document
 from embedding.embedding import get_embedding_model
-from vector_store.db_config import DatabaseConfig
+from vector_store.db_config import DatabaseConfig, SearchConfig
 from vector_store.db_store import PostgresVectorStore
 from datacollector.crawler import Scraper
 from datacollector.pdf_scanner import PDFScanner
 from utils.db_utils import insert_document, store_chunk_batch, SQL_DROP_TABLES
+
+
+_search_config = SearchConfig.from_config_file()
 
 
 def _build_doc_path(doc: Document) -> List[str]:
@@ -38,12 +41,12 @@ app = typer.Typer(rich_markup_mode="markdown", no_args_is_help=False)
 def main(
     ctx: typer.Context,
     query: Annotated[Optional[str], typer.Option("--query", "-q", help="A prompt to find documents to read")] = None,
-    top_k: Annotated[int, typer.Option("--top-k", "-k", help="Number of documents to recommend")] = 10,
-    chunk_k: Annotated[int, typer.Option("--chunk-k", help="Max matched chunks per document")] = 3,
-    min_score: Annotated[float, typer.Option("--min-score", help="Minimum combined score to include")] = 0.01,
-    hybrid: Annotated[bool, typer.Option("--hybrid/--no-hybrid", help="Use hybrid semantic+keyword scoring")] = True,
-    hybrid_weight: Annotated[float, typer.Option("--hybrid-weight", help="Keyword weight in hybrid score (0-1)")] = 0.4,
-    categories: Annotated[Optional[List[str]], typer.Option("--category", "-c", help="Filter chunks by category tag (repeatable)")] = None,
+    top_k: Annotated[int, typer.Option("--top-k", "-k", help="Number of documents to recommend")] = _search_config.top_k,
+    chunk_k: Annotated[int, typer.Option("--chunk-k", help="Max matched chunks per document")] = _search_config.chunk_k,
+    min_score: Annotated[float, typer.Option("--min-score", help="Minimum combined score to include")] = _search_config.min_score,
+    hybrid: Annotated[bool, typer.Option("--hybrid/--no-hybrid", help="Use hybrid semantic+keyword scoring")] = _search_config.hybrid,
+    hybrid_weight: Annotated[float, typer.Option("--hybrid-weight", help="Keyword weight in hybrid score (0-1)")] = _search_config.hybrid_weight,
+    categories: Annotated[Optional[List[str]], typer.Option("--category", "-c", help="Filter chunks by category tag (repeatable)")] = _search_config.categories,
     json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON instead of formatted text")] = False,
 ):
     if ctx.invoked_subcommand is None:
@@ -55,12 +58,12 @@ def main(
 @app.command()
 def search(
     query: Annotated[Optional[str], typer.Argument(help="A prompt to find documents to read")] = None,
-    top_k: Annotated[int, typer.Option("--top-k", "-k", help="Number of documents to recommend")] = 10,
-    chunk_k: Annotated[int, typer.Option("--chunk-k", help="Max matched chunks per document")] = 3,
-    min_score: Annotated[float, typer.Option("--min-score", help="Minimum combined score to include")] = 0.01,
-    hybrid: Annotated[bool, typer.Option("--hybrid/--no-hybrid", help="Use hybrid semantic+keyword scoring")] = True,
-    hybrid_weight: Annotated[float, typer.Option("--hybrid-weight", help="Keyword weight in hybrid score (0-1)")] = 0.4,
-    categories: Annotated[Optional[List[str]], typer.Option("--category", "-c", help="Filter chunks by category tag (repeatable)")] = None,
+    top_k: Annotated[int, typer.Option("--top-k", "-k", help="Number of documents to recommend")] = _search_config.top_k,
+    chunk_k: Annotated[int, typer.Option("--chunk-k", help="Max matched chunks per document")] = _search_config.chunk_k,
+    min_score: Annotated[float, typer.Option("--min-score", help="Minimum combined score to include")] = _search_config.min_score,
+    hybrid: Annotated[bool, typer.Option("--hybrid/--no-hybrid", help="Use hybrid semantic+keyword scoring")] = _search_config.hybrid,
+    hybrid_weight: Annotated[float, typer.Option("--hybrid-weight", help="Keyword weight in hybrid score (0-1)")] = _search_config.hybrid_weight,
+    categories: Annotated[Optional[List[str]], typer.Option("--category", "-c", help="Filter chunks by category tag (repeatable)")] = _search_config.categories,
     json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON instead of formatted text")] = False,
 ):
     """Search scraped documents and return the most relevant pages."""
@@ -174,8 +177,8 @@ def pdf_scan(
             with conn.cursor() as cur:
                 insert_document(cur, doc.id, doc.source, doc.title, doc_path, doc.metadata)
 
+    chunker = Chunker()
     for doc in documents:
-        chunker = Chunker()
         for chunk in chunker.create_chunks_from_document(doc):
             batch_chunks.append(chunk)
             if len(batch_chunks) >= 64:

@@ -39,8 +39,9 @@ print_success() {
     echo "✅ Setup finished successfully!"
     echo "------------------------------------------------"
     echo "💡 To activate the environment manually: source .venv/bin/activate"
-    echo "🔍 To search via CLI:                  python3 app.py search --help"
-    echo "📄 To scan a PDF:                      python3 app.py pdf-scan --help"
+    echo "🔍 To search via CLI:                  ./run.sh search"
+    echo "📄 To scan a PDF:                      ./run.sh pdf-scan <path_to_pdf>"
+    echo "To scrape a website:                   ./run.sh scrape <url>"
     echo "🌐 To run the web UI:                  ./run.sh serve --help"
     echo "🧪 To run tests:                       ./run.sh test"
     echo "🔨 To compile/check all .py files:     ./run.sh compile"
@@ -109,6 +110,18 @@ main() {
         fi
         shift
         run_server "$@"
+        exit 0
+    fi
+
+    if [[ "$1" == "pdf-scan" ]]; then
+        shift
+        run_app pdf-scan "$@"
+        exit 0
+    fi
+
+    if [[ "$1" == "scrape" ]]; then
+        shift
+        run_app scrape "$@"
         exit 0
     fi
 

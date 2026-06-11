@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import List, Optional
 
@@ -12,6 +13,9 @@ from datacollector.base import DataCollector
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
+
+
+PDF_SERVE_DIR = Path(__file__).resolve().parent.parent / "pdfs"
 
 
 class PDFScanner(DataCollector):
@@ -36,7 +40,6 @@ class PDFScanner(DataCollector):
         if not os.path.exists(pdf_path):
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
-        source = source or pdf_path
         title = Path(pdf_path).stem
 
         try:
@@ -45,13 +48,23 @@ class PDFScanner(DataCollector):
             logger.error(f"Failed to read PDF {pdf_path}: {e}")
             return []
 
+        PDF_SERVE_DIR.mkdir(parents=True, exist_ok=True)
+        dest_path = PDF_SERVE_DIR / Path(pdf_path).name
+        if not dest_path.exists():
+            try:
+                shutil.copy2(pdf_path, dest_path)
+            except Exception as e:
+                logger.warning(f"Could not copy PDF to serve directory: {e}")
+
+        base_source = source or f"/pdfs/{Path(pdf_path).name}"
+
         self.documents = []
         for page_num, page in enumerate(reader.pages, start=1):
             try:
                 text = page.extract_text()
                 if text and text.strip():
                     document = Document.create(
-                        source=source,
+                        source=f"{base_source}#page={page_num}",
                         title=f"{title} (page {page_num})",
                         content=text,
                         metadata={"page": page_num, "total_pages": len(reader.pages)},

@@ -1,6 +1,6 @@
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +8,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from processor.processor import recommend_documents
+from vector_store.db_store import PostgresVectorStore
+from vector_store.db_config import DatabaseConfig
+
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="Doc Chatbot", version="1.0.0")
 
@@ -21,14 +25,19 @@ app.add_middleware(
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 HTML_PATH = BASE_DIR / "web_frontend" / "index.html"
+PDF_DIR = BASE_DIR / "pdfs"
+PDF_DIR.mkdir(parents=True, exist_ok=True)
+
+if PDF_DIR.exists():
+    app.mount("/pdfs", StaticFiles(directory=str(PDF_DIR)), name="pdfs")
 
 
 class SearchRequest(BaseModel):
     query: str
-    chunk_k: int = 3
-    min_score: float = 0.01
-    hybrid: bool = True
-    hybrid_weight: float = 0.4
+    chunk_k: Optional[int] = None
+    min_score: Optional[float] = None
+    hybrid: Optional[bool] = None
+    hybrid_weight: Optional[float] = None
     categories: Optional[List[str]] = None
 
 
@@ -39,16 +48,19 @@ def health():
 
 @app.post("/api/search", response_class=JSONResponse)
 def search(req: SearchRequest):
+    from vector_store.db_config import SearchConfig
+    default_config = SearchConfig.from_config_file()
+    
     start = time.time()
     try:
         results = recommend_documents(
             query=req.query,
             top_k=10000,
-            chunk_k=req.chunk_k,
-            min_score=req.min_score,
-            hybrid=req.hybrid,
-            hybrid_weight=req.hybrid_weight,
-            categories=req.categories,
+            chunk_k=req.chunk_k if req.chunk_k is not None else default_config.chunk_k,
+            min_score=req.min_score if req.min_score is not None else default_config.min_score,
+            hybrid=req.hybrid if req.hybrid is not None else default_config.hybrid,
+            hybrid_weight=req.hybrid_weight if req.hybrid_weight is not None else default_config.hybrid_weight,
+            categories=req.categories if req.categories else default_config.categories,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -71,14 +83,41 @@ def index():
 
 @app.get("/api/config", response_class=JSONResponse)
 def get_config():
-    from vector_store.db_config import DatabaseConfig
     db_config = DatabaseConfig.from_config_file()
+    from vector_store.db_config import SearchConfig
+    search_config = SearchConfig.from_config_file()
     return {
         "defaults": {
-            "chunk_k": 3,
-            "min_score": 0.01,
-            "hybrid": True,
-            "hybrid_weight": 0.4,
+            "chunk_k": search_config.chunk_k,
+            "min_score": search_config.min_score,
+            "hybrid": search_config.hybrid,
+            "hybrid_weight": search_config.hybrid_weight,
+            "top_k": search_config.top_k,
         },
         "database_available": db_config.is_configured(),
     }
+
+
+@app.get("/api/document/{document_id}", response_class=JSONResponse)
+def get_document(document_id: str):
+    db_config = DatabaseConfig.from_config_file()
+    if not db_config.is_configured():
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    store = PostgresVectorStore(config=db_config)
+    try:
+        store.load()
+        with store._conn.cursor() as cur:
+            cur.execute("SELECT id, source, title, path, metadata FROM documents WHERE id = %s", (document_id,))
+            row = cur.fetchone()
+            if row:
+                return {
+                    "id": row[0],
+                    "source": row[1],
+                    "title": row[2],
+                    "path": row[3] if row[3] else [],
+                    "metadata": row[4] if row[4] else {},
+                }
+            raise HTTPException(status_code=404, detail="Document not found")
+    finally:
+        store.close()

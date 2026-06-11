@@ -116,12 +116,9 @@ def _rank_results(
     top_k: int,
     categories: Optional[List[str]],
 ) -> List[dict]:
-    from chunker.keywords import _STOP_WORDS
-
     query_terms = set(re.findall(r'\w+', query.lower()))
     debug(f"query_terms={sorted(query_terms)} hybrid={hybrid} hybrid_weight={hybrid_weight}", "processor")
 
-    significant_query_terms = {term for term in query_terms if term not in _STOP_WORDS}
     normalized_categories = {c.lower() for c in categories or []}
     document_chunks: dict = {}
 
@@ -151,11 +148,6 @@ def _rank_results(
                 chunk_meta_categories = [str(c).lower() for c in (chunk.metadata.get("categories") or [])]
                 if normalized_categories and not normalized_categories.intersection(chunk_meta_categories):
                     continue
-
-                chunk_text = chunk.content.lower()
-                if significant_query_terms:
-                    if not any(term in chunk_text for term in significant_query_terms):
-                        continue
 
                 score_value = scores.get(chunk.id, 0.0)
                 if hybrid and chunk.id in keyword_scores:
@@ -221,13 +213,14 @@ def recommend_documents(
     )
 
 
+_OCR_SPACE_RE = re.compile(r'\b([a-z])\s+(\w+)', re.IGNORECASE)
+
+
+def _normalize_ocr(text: str) -> str:
+    return _OCR_SPACE_RE.sub(r'\1\2', text)
+
+
 def _compute_keyword_scores(chunk_ids: set, query_terms: set) -> dict:
-    from chunker.keywords import _STOP_WORDS
-
-    stop_removed = {term for term in query_terms if term not in _STOP_WORDS}
-    if not stop_removed:
-        stop_removed = query_terms
-
     keyword_scores: dict = {}
     db_config = DatabaseConfig.from_config_file()
     if db_config.is_configured():
@@ -239,9 +232,9 @@ def _compute_keyword_scores(chunk_ids: set, query_terms: set) -> dict:
                     cur.execute(SQL_GET_CHUNK_CONTENT, (chunk_id,))
                     row = cur.fetchone()
                     if row:
-                        text = row[0].lower()
-                        matched = sum(1 for term in stop_removed if term in text)
-                        keyword_scores[chunk_id] = matched / len(stop_removed) if stop_removed else 0.0
+                        normalized_text = _normalize_ocr(row[0].lower())
+                        matched = sum(1 for term in query_terms if term in normalized_text)
+                        keyword_scores[chunk_id] = matched / len(query_terms) if query_terms else 0.0
         finally:
             store.close()
     return keyword_scores
