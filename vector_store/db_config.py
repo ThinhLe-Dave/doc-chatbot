@@ -1,36 +1,43 @@
-import os
-from dataclasses import dataclass, field
 from typing import Optional, List
+from dataclasses import dataclass, field
+
+from utils.config import (
+    get_search_top_k,
+    get_search_chunk_k,
+    get_search_min_score,
+    get_search_hybrid,
+    get_search_hybrid_weight,
+    get_db_host,
+    get_db_port,
+    get_db_name,
+    get_db_user,
+    get_db_password,
+    get_db_url,
+)
 
 
+# TODO: Consider deprecating SearchConfig and DatabaseConfig in favor of direct utils.config imports
 @dataclass
 class SearchConfig:
     """Search configuration parameters."""
     top_k: int = 10
     chunk_k: int = 3
     min_score: float = 0.01
-    hybrid: bool = False
+    hybrid: bool = True
     hybrid_weight: float = 0.1
     categories: Optional[List[str]] = field(default_factory=lambda: None)
 
     @classmethod
-    def from_config_file(cls, config_path: str = "config/config.cfg") -> "SearchConfig":
+    def from_config_file(cls, config_path: str = None) -> "SearchConfig":
         """Load configuration from config.cfg file."""
-        import configparser
-        config = configparser.ConfigParser()
-        config.read(config_path)
-
-        if "search" in config:
-            section = config["search"]
-            return cls(
-                top_k=int(section.get("top_k", "10")),
-                chunk_k=int(section.get("chunk_k", "3")),
-                min_score=float(section.get("min_score", "0.01")),
-                hybrid=section.get("hybrid", "false").lower() in ("true", "1", "yes"),
-                hybrid_weight=float(section.get("hybrid_weight", "0.1")),
-                categories=None,
-            )
-        return cls()
+        return cls(
+            top_k=get_search_top_k(),
+            chunk_k=get_search_chunk_k(),
+            min_score=get_search_min_score(),
+            hybrid=get_search_hybrid(),
+            hybrid_weight=get_search_hybrid_weight(),
+            categories=None,
+        )
 
 
 @dataclass
@@ -47,37 +54,30 @@ class DatabaseConfig:
     @classmethod
     def from_env(cls) -> "DatabaseConfig":
         """Load configuration from environment variables."""
-        url = os.environ.get("DATABASE_URL")
+        url = get_db_url()
         if url:
             return cls(url=url)
         return cls(
-            host=os.environ.get("DB_HOST", "localhost"),
-            port=int(os.environ.get("DB_PORT", "5432")),
-            name=os.environ.get("DB_NAME", "docchatbot"),
-            user=os.environ.get("DB_USER", "docuser"),
-            password=os.environ.get("DB_PASSWORD", ""),
+            host=get_db_host(),
+            port=get_db_port(),
+            name=get_db_name(),
+            user=get_db_user(),
+            password=get_db_password(),
         )
 
     @classmethod
-    def from_config_file(cls, config_path: str = "config/config.cfg") -> "DatabaseConfig":
+    def from_config_file(cls, config_path: str = None) -> "DatabaseConfig":
         """Load configuration from config.cfg file."""
-        import configparser
-        config = configparser.ConfigParser()
-        config.read(config_path)
-
-        if "database" in config:
-            section = config["database"]
-            url = section.get("url") or os.environ.get("DATABASE_URL")
-            if url:
-                return cls(url=url)
-            return cls(
-                host=section.get("host", os.environ.get("DB_HOST", "localhost")),
-                port=int(section.get("port", os.environ.get("DB_PORT", "5432"))),
-                name=section.get("name", os.environ.get("DB_NAME", "docchatbot")),
-                user=section.get("user", os.environ.get("DB_USER", "docuser")),
-                password=section.get("password", os.environ.get("DB_PASSWORD", "")),
-            )
-        return cls.from_env()
+        url = get_db_url()
+        if url:
+            return cls(url=url)
+        return cls(
+            host=get_db_host(),
+            port=get_db_port(),
+            name=get_db_name(),
+            user=get_db_user(),
+            password=get_db_password(),
+        )
 
     def get_connection_string(self) -> str:
         """Build PostgreSQL connection string."""

@@ -34,10 +34,6 @@ if PDF_DIR.exists():
 
 class SearchRequest(BaseModel):
     query: str
-    chunk_k: Optional[int] = None
-    min_score: Optional[float] = None
-    hybrid: Optional[bool] = None
-    hybrid_weight: Optional[float] = None
     categories: Optional[List[str]] = None
 
 
@@ -56,10 +52,10 @@ def search(req: SearchRequest):
         results = recommend_documents(
             query=req.query,
             top_k=10000,
-            chunk_k=req.chunk_k if req.chunk_k is not None else default_config.chunk_k,
-            min_score=req.min_score if req.min_score is not None else default_config.min_score,
-            hybrid=req.hybrid if req.hybrid is not None else default_config.hybrid,
-            hybrid_weight=req.hybrid_weight if req.hybrid_weight is not None else default_config.hybrid_weight,
+            chunk_k=default_config.chunk_k,
+            min_score=default_config.min_score,
+            hybrid=default_config.hybrid,
+            hybrid_weight=default_config.hybrid_weight,
             categories=req.categories if req.categories else default_config.categories,
         )
     except Exception as exc:
@@ -84,16 +80,7 @@ def index():
 @app.get("/api/config", response_class=JSONResponse)
 def get_config():
     db_config = DatabaseConfig.from_config_file()
-    from vector_store.db_config import SearchConfig
-    search_config = SearchConfig.from_config_file()
     return {
-        "defaults": {
-            "chunk_k": search_config.chunk_k,
-            "min_score": search_config.min_score,
-            "hybrid": search_config.hybrid,
-            "hybrid_weight": search_config.hybrid_weight,
-            "top_k": search_config.top_k,
-        },
         "database_available": db_config.is_configured(),
     }
 

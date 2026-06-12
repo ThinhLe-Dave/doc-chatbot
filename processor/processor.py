@@ -11,6 +11,14 @@ from utils.logging import debug
 from vector_store.db_store import PostgresVectorStore, PostgresVectorStoreError
 from vector_store.db_config import DatabaseConfig
 from utils.db_utils import SQL_GET_CHUNKS_BY_IDS, SQL_GET_CHUNK_CONTENT
+from utils.config import (
+    get_search_top_k,
+    get_search_chunk_k,
+    get_search_min_score,
+    get_search_hybrid,
+    get_search_hybrid_weight,
+)
+
 
 def _truncate_preview(text: str, max_len: int = 220) -> str:
     if len(text) <= max_len:
@@ -186,13 +194,18 @@ def _rank_results(
 
 def recommend_documents(
     query: str,
-    top_k: int = 10,
-    chunk_k: int = 3,
-    min_score: float = 0.01,
-    hybrid: bool = True,
-    hybrid_weight: float = 0.4,
+    top_k: int = None,
+    chunk_k: int = None,
+    min_score: float = None,
+    hybrid: bool = None,
+    hybrid_weight: float = None,
     categories: Optional[List[str]] = None,
 ) -> List[dict]:
+    top_k = top_k if top_k is not None else get_search_top_k()
+    chunk_k = chunk_k if chunk_k is not None else get_search_chunk_k()
+    min_score = min_score if min_score is not None else get_search_min_score()
+    hybrid = hybrid if hybrid is not None else get_search_hybrid()
+    hybrid_weight = hybrid_weight if hybrid_weight is not None else get_search_hybrid_weight()
     hybrid_weight = max(0.0, min(1.0, hybrid_weight))
 
     db_config = DatabaseConfig.from_config_file()

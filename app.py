@@ -10,14 +10,18 @@ from processor.processor import (
 from chunker.chunker import Chunker
 from chunker.document import Document
 from embedding.embedding import get_embedding_model
-from vector_store.db_config import DatabaseConfig, SearchConfig
+from vector_store.db_config import DatabaseConfig
 from vector_store.db_store import PostgresVectorStore
 from datacollector.crawler import Scraper
 from datacollector.pdf_scanner import PDFScanner
 from utils.db_utils import insert_document, store_chunk_batch, SQL_DROP_TABLES
-
-
-_search_config = SearchConfig.from_config_file()
+from utils.config import (
+    get_search_top_k,
+    get_search_chunk_k,
+    get_search_min_score,
+    get_search_hybrid,
+    get_search_hybrid_weight,
+)
 
 
 def _build_doc_path(doc: Document) -> List[str]:
@@ -41,14 +45,20 @@ app = typer.Typer(rich_markup_mode="markdown", no_args_is_help=False)
 def main(
     ctx: typer.Context,
     query: Annotated[Optional[str], typer.Option("--query", "-q", help="A prompt to find documents to read")] = None,
-    top_k: Annotated[int, typer.Option("--top-k", "-k", help="Number of documents to recommend")] = _search_config.top_k,
-    chunk_k: Annotated[int, typer.Option("--chunk-k", help="Max matched chunks per document")] = _search_config.chunk_k,
-    min_score: Annotated[float, typer.Option("--min-score", help="Minimum combined score to include")] = _search_config.min_score,
-    hybrid: Annotated[bool, typer.Option("--hybrid/--no-hybrid", help="Use hybrid semantic+keyword scoring")] = _search_config.hybrid,
-    hybrid_weight: Annotated[float, typer.Option("--hybrid-weight", help="Keyword weight in hybrid score (0-1)")] = _search_config.hybrid_weight,
-    categories: Annotated[Optional[List[str]], typer.Option("--category", "-c", help="Filter chunks by category tag (repeatable)")] = _search_config.categories,
+    top_k: Annotated[int, typer.Option("--top-k", "-k", help="Number of documents to recommend")] = None,
+    chunk_k: Annotated[int, typer.Option("--chunk-k", help="Max matched chunks per document")] = None,
+    min_score: Annotated[float, typer.Option("--min-score", help="Minimum combined score to include")] = None,
+    hybrid: Annotated[bool, typer.Option("--hybrid/--no-hybrid", help="Use hybrid semantic+keyword scoring")] = None,
+    hybrid_weight: Annotated[float, typer.Option("--hybrid-weight", help="Keyword weight in hybrid score (0-1)")] = None,
+    categories: Annotated[Optional[List[str]], typer.Option("--category", "-c", help="Filter chunks by category tag (repeatable)")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON instead of formatted text")] = False,
 ):
+    top_k = top_k if top_k is not None else get_search_top_k()
+    chunk_k = chunk_k if chunk_k is not None else get_search_chunk_k()
+    min_score = min_score if min_score is not None else get_search_min_score()
+    hybrid = hybrid if hybrid is not None else get_search_hybrid()
+    hybrid_weight = hybrid_weight if hybrid_weight is not None else get_search_hybrid_weight()
+    
     if ctx.invoked_subcommand is None:
         prompt = query or typer.prompt("Enter a prompt describing the documents you want to read")
         results = recommend_documents(prompt, top_k, chunk_k, min_score, hybrid, hybrid_weight, categories)
@@ -58,15 +68,20 @@ def main(
 @app.command()
 def search(
     query: Annotated[Optional[str], typer.Argument(help="A prompt to find documents to read")] = None,
-    top_k: Annotated[int, typer.Option("--top-k", "-k", help="Number of documents to recommend")] = _search_config.top_k,
-    chunk_k: Annotated[int, typer.Option("--chunk-k", help="Max matched chunks per document")] = _search_config.chunk_k,
-    min_score: Annotated[float, typer.Option("--min-score", help="Minimum combined score to include")] = _search_config.min_score,
-    hybrid: Annotated[bool, typer.Option("--hybrid/--no-hybrid", help="Use hybrid semantic+keyword scoring")] = _search_config.hybrid,
-    hybrid_weight: Annotated[float, typer.Option("--hybrid-weight", help="Keyword weight in hybrid score (0-1)")] = _search_config.hybrid_weight,
-    categories: Annotated[Optional[List[str]], typer.Option("--category", "-c", help="Filter chunks by category tag (repeatable)")] = _search_config.categories,
+    top_k: Annotated[int, typer.Option("--top-k", "-k", help="Number of documents to recommend")] = None,
+    chunk_k: Annotated[int, typer.Option("--chunk-k", help="Max matched chunks per document")] = None,
+    min_score: Annotated[float, typer.Option("--min-score", help="Minimum combined score to include")] = None,
+    hybrid: Annotated[bool, typer.Option("--hybrid/--no-hybrid", help="Use hybrid semantic+keyword scoring")] = None,
+    hybrid_weight: Annotated[float, typer.Option("--hybrid-weight", help="Keyword weight in hybrid score (0-1)")] = None,
+    categories: Annotated[Optional[List[str]], typer.Option("--category", "-c", help="Filter chunks by category tag (repeatable)")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON instead of formatted text")] = False,
 ):
     """Search scraped documents and return the most relevant pages."""
+    top_k = top_k if top_k is not None else get_search_top_k()
+    chunk_k = chunk_k if chunk_k is not None else get_search_chunk_k()
+    min_score = min_score if min_score is not None else get_search_min_score()
+    hybrid = hybrid if hybrid is not None else get_search_hybrid()
+    hybrid_weight = hybrid_weight if hybrid_weight is not None else get_search_hybrid_weight()
     prompt = query or typer.prompt("Enter a prompt describing the documents you want to read")
     results = recommend_documents(prompt, top_k, chunk_k, min_score, hybrid, hybrid_weight, categories)
     display_results(results, json_output)
