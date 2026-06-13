@@ -98,13 +98,39 @@ def get_document(document_id: str):
             cur.execute("SELECT id, source, title, path, metadata FROM documents WHERE id = %s", (document_id,))
             row = cur.fetchone()
             if row:
+                metadata = dict(row[4]) if row[4] else {}
                 return {
                     "id": row[0],
                     "source": row[1],
                     "title": row[2],
                     "path": row[3] if row[3] else [],
+                    "categories": metadata.get("categories", []),
                     "metadata": row[4] if row[4] else {},
                 }
             raise HTTPException(status_code=404, detail="Document not found")
+    finally:
+        store.close()
+
+
+@app.get("/api/categories", response_class=JSONResponse)
+def get_categories():
+    """List all unique categories across all documents."""
+    db_config = DatabaseConfig.from_config_file()
+    if not db_config.is_configured():
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    store = PostgresVectorStore(config=db_config)
+    try:
+        store.load()
+        with store._conn.cursor() as cur:
+            cur.execute("SELECT metadata FROM documents")
+            categories_set = set()
+            for row in cur.fetchall():
+                metadata = dict(row[0]) if row[0] else {}
+                for cat in metadata.get("categories", []):
+                    categories_set.add(str(cat).lower())
+        return {"categories": sorted(list(categories_set))}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
         store.close()

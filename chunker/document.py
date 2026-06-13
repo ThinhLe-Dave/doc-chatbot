@@ -187,6 +187,7 @@ def build_document_entry(
     verse = metadata.get("verse")
     section = metadata.get("section")
     headers = [h for h in metadata.get("headers", []) if isinstance(h, str) and h.strip()]
+    categories = metadata.get("categories", [])
 
     if not book and headers:
         book = headers[0]
@@ -208,6 +209,7 @@ def build_document_entry(
         "path": path,
         "location": {k: v for k, v in {"book": book, "chapter": chapter, "verse": verse}.items() if v},
         "metadata": {k: v for k, v in metadata.items() if k not in {"source", "title", "chunk_index", "book", "chapter", "verse", "section"}},
+        "categories": categories,
         "score": score_value,
         "best_chunk": content,
         "chunks": [(score_value, content)],

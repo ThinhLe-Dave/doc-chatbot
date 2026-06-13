@@ -38,6 +38,7 @@ def _format_single_result(index: int, item: dict) -> None:
     chunks = item.get("chunks") or []
     primary = _extract_primary_text(chunks, item)
     metadata = item.get("metadata", {})
+    categories = metadata.get("categories", []) or []
 
     typer.secho(f"{index}. {title}", fg=typer.colors.CYAN, bold=True)
     if source:
@@ -52,6 +53,8 @@ def _format_single_result(index: int, item: dict) -> None:
         typer.echo(f"   section: {section}")
     if path:
         typer.echo(f"   path: {' > '.join(path)}")
+    if categories:
+        typer.echo(f"   categories: {', '.join(categories)}")
     typer.echo(f"   score: {score:.4f}")
     if metadata:
         typer.echo(f"   metadata: {metadata}")
