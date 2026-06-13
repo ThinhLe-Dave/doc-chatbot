@@ -16,7 +16,7 @@
     },
     "chunker": {
       "files": {
-        "chunker.py": "Chunk splitting logic, Chunk/Chunker classes",
+        "chunker.py": "Chunk splitting logic, Chunk/Chunker classes, category extraction",
         "document.py": "Document dataclass, JSON loading utilities",
         "keywords.py": "Keyword extraction utility",
         "chunk_index.py": "Chunk offset/index files for efficient random access"
