@@ -167,12 +167,18 @@ def _join_split_words(text: str) -> str:
 
 def _extract_chapter_info(text: str) -> Optional[str]:
     """Extract chapter/section heading from page text."""
-    match = _CHAPTER_RE.search(text)
-    if match:
-        return match.group(1).strip()
-    match = _PAGE_HEADING_RE.search(text)
-    if match:
-        return match.group(1).strip()
+    matches = _CHAPTER_RE.findall(text)
+    if matches:
+        return matches[0].strip()
+    matches = _PAGE_HEADING_RE.findall(text)
+    if matches:
+        return matches[0].strip()
+    lines = [line.strip() for line in text.split('\n')[:3] if line.strip()]
+    for line in lines:
+        if 3 < len(line) < 80 and line.isupper() and ' ' in line:
+            words = line.split()
+            if len(words) >= 2:
+                return line.title()
     return None
 
 
@@ -252,7 +258,7 @@ class PDFScanner(DataCollector):
                             "page": page_num,
                             "total_pages": len(reader.pages),
                             "extraction_method": extraction_method,
-                            "book": title.replace(".pdf", "").replace("_", " ").replace("-", " "),
+                            "book": re.sub(r'\s+', ' ', title.replace(".pdf", "").replace("_", " ").replace("-", " ")).strip(),
                             "chapter": chapter,
                         },
                     )
