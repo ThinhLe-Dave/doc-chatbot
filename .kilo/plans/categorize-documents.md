@@ -8,17 +8,16 @@ Enable users to see and filter documents by subject/category when researching.
 - [x] Include categories in document entry (chunker/document.py)
 - [x] Add `/api/categories` endpoint for web UI (web_frontend/fastapi_app.py)
 - [x] Add test coverage (test/test_processor.py)
+- [x] Improve category extraction for PDFs - set `book` and `chapter` metadata
+- [x] Keywords only used as categories when no structural metadata exists
 
-## Current State
-- Categories are derived in `chunker/chunker.py:_build_categories()` from:
-  - book, chapter, section, verse metadata fields
-  - headers list
-  - title, source
-  - extracted keywords (top 3 most frequent words > 2 chars)
-- Categories now displayed in both CLI and web search results
-- Categories can be filtered via `--category` CLI flag or `/api/search` parameter
+## Current Behavior
+Categories are now built from:
+1. `book` metadata (e.g., "GDPR" for PDF documents)
+2. `chapter` metadata (e.g., "page 57" for PDF pages)
+3. `section`, `verse` metadata fields
+4. Headers list (h1, h2, h3 from web pages)
+5. Title and source as fallback
+6. Extracted keywords (only when no structural metadata)
 
-## Future Improvements (Optional)
-- [ ] Add more sophisticated categorization in `chunker/keywords.py`
-- [ ] Support hierarchical categories (e.g., "Law > EU > Privacy")
-- [ ] Add category counts/statistics to `/api/categories` endpoint
+This ensures PDFs show "GDPR, page 57" instead of "the, collection, personal".
