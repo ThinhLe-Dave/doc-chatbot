@@ -46,7 +46,7 @@
     "datacollector": {
       "files": {
         "crawler.py": "Web scraper using requests/BeautifulSoup",
-        "pdf_scanner.py": "PDF extraction using pypdf with OCR fallback",
+        "pdf_scanner.py": "PDF extraction, sets book/chapter metadata for categorization",
         "base.py": "Abstract DataCollector base class"
       },
       "purpose": "Data ingestion from web and PDF sources",
