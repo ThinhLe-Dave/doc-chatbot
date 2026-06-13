@@ -72,6 +72,8 @@ _COMMON_SHORT_WORDS = {
 }
 _SINGLE_LETTER_WORDS = {"a", "I"}
 _ACRONYMS = {"AI", "EEA", "EU", "TFEU", "UK", "US"}
+_CHAPTER_RE = re.compile(r"(?m)^(\d+\.?\s*Chapter\s*\d+|\bChapter\s+\d+[:\s]|\bSection\s+\d+[:\s]|\bArticle\s+\d+[:\s])", re.IGNORECASE)
+_PAGE_HEADING_RE = re.compile(r"(?m)^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s*(?:Chapter|Section|Article)\s*\d+)$", re.IGNORECASE)
 _UPPERCASE_SUFFIXES = {"TION", "TIONS", "MENT", "MENTS", "SHIP", "SHIPS", "ENCE", "ENCES", "ANCE", "ANCES"}
 _ALPHA_TOKEN_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")
 _JOIN_SPLIT_WORD_RE = re.compile(r"\b([A-Za-zÀ-ÖØ-öø-ÿ]{1,30})\s+([A-Za-zÀ-ÖØ-öø-ÿ]{1,30})\b")
@@ -163,6 +165,17 @@ def _join_split_words(text: str) -> str:
     return text
 
 
+def _extract_chapter_info(text: str) -> Optional[str]:
+    """Extract chapter/section heading from page text."""
+    match = _CHAPTER_RE.search(text)
+    if match:
+        return match.group(1).strip()
+    match = _PAGE_HEADING_RE.search(text)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
 def _clean_extracted_text(text: str) -> str:
     text = unicodedata.normalize("NFKC", text or "")
     text = text.replace("\x00", "")
@@ -230,6 +243,7 @@ class PDFScanner(DataCollector):
             try:
                 text, extraction_method = self._extract_page_text(pdf_path, page_num - 1, page)
                 if text and text.strip():
+                    chapter = _extract_chapter_info(text)
                     document = Document.create(
                         source=f"{base_source}#page={page_num}",
                         title=f"{title} (page {page_num})",
@@ -239,6 +253,7 @@ class PDFScanner(DataCollector):
                             "total_pages": len(reader.pages),
                             "extraction_method": extraction_method,
                             "book": title.replace(".pdf", "").replace("_", " ").replace("-", " "),
+                            "chapter": chapter,
                         },
                     )
                     self.documents.append(document)

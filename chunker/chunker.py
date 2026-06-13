@@ -454,15 +454,10 @@ class Chunker:
                 if isinstance(header, str) and header.strip():
                     categories.append(header.strip())
         
-        title = metadata.get("title")
-        if title and str(title) not in categories:
-            title_clean = str(title).replace(" (page ", " ").replace(")", "")
-            if title_clean and title_clean not in categories:
-                categories.append(title_clean)
-        
         if "page" in metadata:
             page_num = metadata["page"]
-            categories.append(f"Page {page_num}")
+            if "Page " + str(page_num) not in categories:
+                categories.append(f"Page {page_num}")
 
         if not categories and content.strip():
             for keyword in _extract_keywords(content):
