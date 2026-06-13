@@ -1,19 +1,18 @@
 # Doc Chatbot
 
-A lightweight document search and chatbot-style retrieval system built from scraped JSON content. This repository supports:
+A lightweight document search and chatbot-style retrieval system. This repository supports:
 
-- scraping website content into JSON using a custom crawler
-- chunking documents for semantic search
+- scraping website content for semantic search
+- scanning PDF files for document processing
 - building embedding caches with Sentence Transformers
 - querying documents using cosine similarity ranking
 - **PostgreSQL storage with pgvector for production deployments**
 - an optional FastAPI-based web UI for browser search
-- an optional Jupyter notebook interface
 
 ## Repository Structure
 
-- `app.py` — main CLI entry point with commands for search, chunk creation, and scraping
-- `web_frontend/` — FastAPI backend + browser UI + Jupyter notebook
+- `app.py` — main CLI entry point with commands for search, scraping, and PDF scanning
+- `web_frontend/` — FastAPI backend + browser UI
 - `chunker/` — document and chunk utilities
 - `embedding/` — embedding model loading, encoding, and persistence helpers
 - `datacollector/` — web scraping crawler and PDF scanner
@@ -54,29 +53,49 @@ To use PostgreSQL for vector storage (recommended for production):
 python app.py search "your query here"
 ```
 
-PostgreSQL is used automatically when configured in `config/config.cfg`.
+#### Search options
 
-### Build document chunks and embeddings
-
-Build chunks and embeddings (stored in PostgreSQL when configured):
-
-```bash
-python app.py build-chunks --input database/research_data.json
-```
-
-### Migrate existing chunks to PostgreSQL
-
-```bash
-python app.py migrate --input "database/*_chunks.json"
-```
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--top-k, -k` | Number of documents to return | 10 |
+| `--chunk-k` | Max matched chunks per document | 3 |
+| `--min-score` | Minimum combined score threshold | 0.01 |
+| `--hybrid/--no-hybrid` | Use hybrid semantic+keyword scoring | true |
+| `--hybrid-weight` | Keyword weight in hybrid mode (0-1) | 0.1 |
+| `--category, -c` | Filter chunks by category tag (repeatable) | - |
+| `--json` | Output raw JSON instead of formatted text | false |
 
 ### Scrape a website
 
 ```bash
-python app.py scrape https://example.com --output research_data.json --limit 100
+python app.py scrape https://example.com --limit 100
 ```
 
-The scraped output is saved under `database/`.
+Crawls a website and stores content directly in PostgreSQL for chatbot processing.
+
+### Scan a PDF file
+
+```bash
+python app.py pdf-scan /path/to/document.pdf
+```
+
+Extracts text from PDF files and builds document chunks directly in PostgreSQL.
+
+#### PDF scan options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--ocr/--no-ocr` | Use OCR fallback for scanned PDFs | false |
+| `--ocr-language` | Tesseract language code for OCR | eng |
+| `--ocr-dpi` | Rendering DPI for OCR | 200 |
+
+### Clear the database
+
+```bash
+python app.py clear-db --force
+```
+
+Drops all tables and recreates them (testing only).
 
 ### Run the web UI (FastAPI)
 
@@ -84,24 +103,10 @@ The scraped output is saved under `database/`.
 ./run.sh serve
 ```
 
-Then open `http://127.0.0.1:8000`.
+Then open `http://127.0.0.1:8000`. To run on a custom address:
 
-To run on a custom address:
 ```bash
 ./run.sh serve 8000 0.0.0.0
-```
-
-### Run the notebook interface
-
-```bash
-./run.sh notebook
-```
-
-Open the URL shown in the terminal and navigate to `web_frontend/notebook.ipynb`.
-
-To run on a custom address:
-```bash
-./run.sh notebook 8888 0.0.0.0
 ```
 
 ## Notes
@@ -109,11 +114,10 @@ To run on a custom address:
 - The current embedding model is `paraphrase-multilingual-MiniLM-L12-v2` from Sentence Transformers (384 dimensions).
 - The search flow uses chunked document embeddings and a cosine similarity ranking over top results.
 - If you hit memory issues during embedding generation, reduce the number of chunks or run on a machine with more RAM.
-- When using PostgreSQL, source documents remain in JSON files; only chunks and embeddings are migrated.
 
 ## Development
 
-To run the existing low-memory regression test:
+To run the test suite:
 
 ```bash
 ./run.sh test
@@ -124,11 +128,3 @@ To check all `.py` files compile cleanly:
 ```bash
 ./run.sh compile
 ```
-
-### Scan a PDF file
-
-```bash
-python app.py pdf-scan /path/to/document.pdf --output pdf_data.json
-```
-
-This command extracts text from each PDF page, creates chunks, and builds embeddings saved under `database/`.

@@ -39,7 +39,7 @@ print_success() {
     echo "✅ Setup finished successfully!"
     echo "------------------------------------------------"
     echo "💡 To activate the environment manually: source .venv/bin/activate"
-    echo "🔍 To search via CLI:                  ./run.sh search"
+    echo "🔍 To search via CLI:                  ./run.sh search <query>"
     echo "📄 To scan a PDF:                      ./run.sh pdf-scan <path_to_pdf>"
     echo "To scrape a website:                   ./run.sh scrape <url>"
     echo "🌐 To run the web UI:                  ./run.sh serve --help"
@@ -133,12 +133,6 @@ main() {
 
     if [[ "$1" == "compile" ]]; then
         run_compile
-        exit 0
-    fi
-
-    if [[ "$1" == "build-chunks" ]]; then
-        shift
-        run_app build_chunks "$@"
         exit 0
     fi
 
