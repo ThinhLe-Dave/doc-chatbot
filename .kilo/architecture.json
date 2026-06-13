@@ -68,7 +68,7 @@
         "fastapi_app.py": "FastAPI web API with search endpoint"
       },
       "purpose": "Web API interface",
-      "endpoints": ["/health", "/api/search", "/", "/api/config", "/api/document/{document_id}"]
+      "endpoints": ["/health", "/api/search", "/", "/api/config", "/api/document/{document_id}", "/api/categories"]
     }
   },
   "data_flow": {

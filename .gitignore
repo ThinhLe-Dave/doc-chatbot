@@ -3,6 +3,7 @@ database/
 !.kilo/architecture.json
 !.kilo/commands/
 !.kilo/agents/
+!.kilo/plans/
 pdfs
 .DS_Store
 config/*.token
