@@ -1,5 +1,10 @@
 database/
 .kilo/
+!.kilo/architecture.json
+!.kilo/commands/
+!.kilo/agents/
+pdfs
+.DS_Store
 config/*.token
 config/*_secret.cfg
 # config/config.cfg is ignored by default - copy config/config.example.cfg to config/config.cfg for local use

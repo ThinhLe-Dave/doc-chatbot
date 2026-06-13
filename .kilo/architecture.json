@@ -1,0 +1,85 @@
+{
+  "project": "doc-chatbot",
+  "description": "Document chatbot for semantic search using embeddings and PostgreSQL",
+  "modules": {
+    "app": {
+      "file": "app.py",
+      "purpose": "CLI entry point using typer",
+      "commands": ["main", "search", "scrape", "pdf_scan", "clear_db"],
+      "dependencies": ["processor.processor", "chunker.chunker", "embedding.embedding", "vector_store.db_store", "datacollector"]
+    },
+    "processor": {
+      "file": "processor/processor.py",
+      "purpose": "Search and ranking logic for document recommendations",
+      "key_functions": ["recommend_documents", "display_results", "_search_and_score", "_rank_results", "_compute_keyword_scores"],
+      "dependencies": ["chunker.document", "embedding.embedding", "vector_store.db_store", "utils.db_utils", "utils.config"]
+    },
+    "chunker": {
+      "files": {
+        "chunker.py": "Chunk splitting logic, Chunk/Chunker classes",
+        "document.py": "Document dataclass, JSON loading utilities",
+        "keywords.py": "Keyword extraction utility",
+        "chunk_index.py": "Chunk offset/index files for efficient random access"
+      },
+      "purpose": "Text chunking for embedding generation",
+      "key_classes": ["Chunk", "Chunker", "Document"],
+      "key_functions": ["create_chunks", "write_chunks_to_file", "load_documents_from_json"],
+      "dependencies": ["chunker.keywords"]
+    },
+    "embedding": {
+      "file": "embedding/embedding.py",
+      "purpose": "Text-to-embedding conversion using SentenceTransformer",
+      "model": "paraphrase-multilingual-MiniLM-L12-v2",
+      "key_functions": ["get_embedding_model", "embed_texts", "load_or_build_embeddings"],
+      "dependencies": ["chunker.chunker", "utils.config"]
+    },
+    "vector_store": {
+      "files": {
+        "db_store.py": "PostgresVectorStore - PostgreSQL storage with pgvector",
+        "store.py": "VectorStore - file-based embedding cache",
+        "index.py": "VectorIndex - similarity search with numpy",
+        "db_config.py": "DatabaseConfig/SearchConfig dataclasses"
+      },
+      "purpose": "Vector storage and similarity search",
+      "key_functions": ["search", "build", "load", "save_chunks_from_file"]
+    },
+    "datacollector": {
+      "files": {
+        "crawler.py": "Web scraper using requests/BeautifulSoup",
+        "pdf_scanner.py": "PDF extraction using pypdf with OCR fallback",
+        "base.py": "Abstract DataCollector base class"
+      },
+      "purpose": "Data ingestion from web and PDF sources",
+      "key_classes": ["Scraper", "PDFScanner"],
+      "dependencies": ["chunker.document", "chunker.chunker"]
+    },
+    "utils": {
+      "files": {
+        "config.py": "Configuration loading from config.cfg/env",
+        "db_utils.py": "SQL queries and database operations",
+        "logging.py": "Debug logging utilities",
+        "data_utils.py": "Data utilities"
+      },
+      "purpose": "Shared utilities and configuration",
+      "key_functions": ["get_search_top_k", "get_search_chunk_k", "insert_document", "store_chunk_batch"]
+    },
+    "web_frontend": {
+      "files": {
+        "fastapi_app.py": "FastAPI web API with search endpoint"
+      },
+      "purpose": "Web API interface",
+      "endpoints": ["/health", "/api/search", "/", "/api/config", "/api/document/{document_id}"]
+    }
+  },
+  "data_flow": {
+    "crawl": ["datacollector.crawler.Scraper.crawl", "Document.from_dict", "chunker.create_chunks_from_document", "PostgresVectorStore.build"],
+    "pdf_scan": ["PDFScanner.scan_pdf", "Document.create", "chunker.create_chunks_from_document", "PostgresVectorStore.build"],
+    "search": ["get_embedding_model", "embed_texts", "PostgresVectorStore.search", "_rank_results", "display_results"]
+  },
+  "database_schema": {
+    "tables": ["documents", "chunks", "embeddings"],
+    "documents_columns": ["id", "source", "title", "path", "metadata"],
+    "chunks_columns": ["id", "document_id", "content", "path", "metadata"],
+    "embeddings_columns": ["chunk_id", "embedding"]
+  }
+}
