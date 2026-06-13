@@ -238,8 +238,7 @@ class PDFScanner(DataCollector):
                             "page": page_num,
                             "total_pages": len(reader.pages),
                             "extraction_method": extraction_method,
-                            "book": title,
-                            "chapter": f"page {page_num}",
+                            "book": title.replace(".pdf", "").replace("_", " ").replace("-", " "),
                         },
                     )
                     self.documents.append(document)
