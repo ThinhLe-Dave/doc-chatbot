@@ -17,6 +17,7 @@ from utils.db_utils import (
     SQL_INSERT_CHUNK,
     SQL_INSERT_EMBEDDING,
     SQL_SEARCH_SIMILAR,
+    SQL_SEARCH_SIMILAR_WITH_CATEGORIES,
     SQL_GET_CHUNK_BY_ID,
     SQL_COUNT_CHUNKS,
 )
@@ -114,15 +115,23 @@ class PostgresVectorStore:
         query_embedding: np.ndarray,
         top_k: int = 10,
         min_score: float = 0.0,
+        categories: Optional[List[str]] = None,
     ) -> List[SearchResult]:
         """Search for similar chunks using cosine similarity."""
         conn = self._get_connection()
+        normalized_categories = [str(category).lower() for category in categories or []]
 
         with conn.cursor() as cur:
-            cur.execute(
-                SQL_SEARCH_SIMILAR,
-                (query_embedding.tolist(), top_k * 4)
-            )
+            if normalized_categories:
+                cur.execute(
+                    SQL_SEARCH_SIMILAR_WITH_CATEGORIES,
+                    (query_embedding.tolist(), normalized_categories, top_k * 4)
+                )
+            else:
+                cur.execute(
+                    SQL_SEARCH_SIMILAR,
+                    (query_embedding.tolist(), top_k * 4)
+                )
             results = []
             for row in cur.fetchall():
                 chunk_id, document_id, distance = row

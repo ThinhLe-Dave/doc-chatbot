@@ -126,7 +126,7 @@
     </div>
     <script>
         const $ = id => document.getElementById(id);
-        const API_BASE = 'http://127.0.0.1:8000';
+        const API_BASE = '';
         const PAGE_SIZE = 10;
         let currentAbortController = null;
         let allResults = [];
@@ -180,8 +180,8 @@
                     return;
                 }
                 const data = await res.json();
-                status.textContent = data.count + ' results in ' + data.elapsed_ms + 'ms';
-                allResults = data.results;
+                allResults = dedupeResults(data.results);
+                status.textContent = allResults.length + ' results in ' + data.elapsed_ms + 'ms';
                 currentPage = 1;
                 renderPage();
             } catch (e) {
@@ -345,6 +345,28 @@
 
         function esc(str){
             const div=document.createElement('div'); div.textContent=str; return div.innerHTML;
+        }
+        function canonicalUrlKey(url){
+            try {
+                const u = new URL(url);
+                const host = u.host.replace(/^www\./, '').toLowerCase();
+                const path = u.pathname.replace(/\/$/, '');
+                return `${host}${path}`;
+            } catch (e) {
+                return url || '';
+            }
+        }
+        function dedupeResults(results){
+            const seen = new Set();
+            const deduped = [];
+            for (const result of results) {
+                const key = result.source ? canonicalUrlKey(result.source) : result.id;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    deduped.push(result);
+                }
+            }
+            return deduped;
         }
         function render(results){
             const box=$('results');

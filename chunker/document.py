@@ -4,6 +4,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
 try:
@@ -40,6 +41,23 @@ def _log_memory_error(operation: str, details: str = "") -> None:
         fg=typer.colors.RED,
         err=True,
     )
+
+
+def canonicalize_url(url: str) -> str:
+    if not url:
+        return url
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return url
+
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower().removeprefix("www.")
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/")
+
+    return urlunparse((scheme, netloc, path, "", "", ""))
 
 
 @dataclass
@@ -86,9 +104,11 @@ class Document:
             if len(headers) > 2:
                 metadata.setdefault("verse", headers[2])
 
+        source = canonicalize_url(data.get("source", data.get("url", "")))
+
         return Document(
             id=data.get("id", str(uuid4())),
-            source=data.get("source", data.get("url", "")),
+            source=source,
             title=data.get("title", ""),
             content=data.get("content", data.get("body", "")),
             metadata=metadata,
@@ -180,7 +200,7 @@ def build_document_entry(
     chunk_k: int,
 ) -> dict:
     """Create a new document entry from chunk data."""
-    source = metadata.get("source", "")
+    source = canonicalize_url(metadata.get("source", ""))
     title = metadata.get("title", "")
     book = metadata.get("book")
     chapter = metadata.get("chapter")

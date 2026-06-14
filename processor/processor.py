@@ -106,9 +106,10 @@ def _search_and_score(
     query_embedding: np.ndarray,
     top_k: int,
     min_score: float,
+    categories: Optional[List[str]],
 ) -> tuple:
     top_k_chunks = min(max(top_k * 24, top_k), store.chunk_count)
-    search_results = store.search(query_embedding, top_k=top_k_chunks, min_score=0.0)
+    search_results = store.search(query_embedding, top_k=top_k_chunks, min_score=0.0, categories=categories)
 
     chunk_ids = {r.chunk_id for r in search_results}
     scores = {r.chunk_id: r.score for r in search_results}
@@ -127,7 +128,7 @@ def _rank_results(
     top_k: int,
     categories: Optional[List[str]],
 ) -> List[dict]:
-    query_terms = set(re.findall(r'\w+', query.lower()))
+    query_terms = _extract_query_terms(query)
     debug(f"query_terms={sorted(query_terms)} hybrid={hybrid} hybrid_weight={hybrid_weight}", "processor")
 
     normalized_categories = {c.lower() for c in categories or []}
@@ -222,11 +223,26 @@ def recommend_documents(
         raise ValueError("Could not load any chunks from the database.")
 
     query_embedding = _encode_query(query)
-    candidate_ids, scores = _search_and_score(store, query_embedding, top_k, min_score)
+    candidate_ids, scores = _search_and_score(store, query_embedding, top_k, min_score, categories)
 
     return _rank_results(
         candidate_ids, scores, query, hybrid, hybrid_weight, min_score, chunk_k, top_k, categories
     )
+
+
+_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "he", "in",
+    "is", "it", "its", "of", "on", "or", "should", "that", "the", "their", "this", "to", "use", "used", "was",
+    "were", "will", "with", "how",
+}
+
+
+def _extract_query_terms(query: str) -> set[str]:
+    return {
+        term
+        for term in re.findall(r'\w+', query.lower())
+        if len(term) > 2 and term not in _STOPWORDS
+    }
 
 
 _OCR_SPACE_RE = re.compile(r'\b([a-z])\s+(\w+)', re.IGNORECASE)
@@ -238,6 +254,9 @@ def _normalize_ocr(text: str) -> str:
 
 def _compute_keyword_scores(chunk_ids: set, query_terms: set) -> dict:
     keyword_scores: dict = {}
+    if not query_terms:
+        return keyword_scores
+
     db_config = DatabaseConfig.from_config_file()
     if db_config.is_configured():
         store = PostgresVectorStore(config=db_config)
@@ -249,8 +268,12 @@ def _compute_keyword_scores(chunk_ids: set, query_terms: set) -> dict:
                     row = cur.fetchone()
                     if row:
                         normalized_text = _normalize_ocr(row[0].lower())
-                        matched = sum(1 for term in query_terms if term in normalized_text)
-                        keyword_scores[chunk_id] = matched / len(query_terms) if query_terms else 0.0
+                        matched = sum(
+                            1
+                            for term in query_terms
+                            if re.search(rf"\b{re.escape(term)}\b", normalized_text)
+                        )
+                        keyword_scores[chunk_id] = matched / len(query_terms)
         finally:
             store.close()
     return keyword_scores

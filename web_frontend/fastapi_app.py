@@ -1,4 +1,5 @@
 import time
+import uuid
 from pathlib import Path
 from typing import List, Optional
 
@@ -16,6 +17,7 @@ from embedding.embedding import get_embedding_model
 from utils.db_utils import insert_document, store_chunk_batch
 from datacollector.crawler import Scraper
 from datacollector.pdf_scanner import PDFScanner
+from utils.config import get_cors_allowed_origins, get_cors_allow_credentials
 
 from fastapi.staticfiles import StaticFiles
 
@@ -23,13 +25,15 @@ from web_frontend.job_manager import JobManager
 
 app = FastAPI(title="Doc Chatbot", version="1.0.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-)
+CORS_ALLOWED_ORIGINS = get_cors_allowed_origins()
+if CORS_ALLOWED_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ALLOWED_ORIGINS,
+        allow_credentials=get_cors_allow_credentials(),
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 HTML_PATH = BASE_DIR / "web_frontend" / "index.html"
@@ -238,20 +242,20 @@ def _run_scrape(job_id: str, url: str, max_pages: int):
         job_manager.update_job(job_id, status="failed", error=str(e))
 
 
-def _run_pdf_scan_from_bytes(job_id: str, file_content: bytes, filename: str, use_ocr: bool, ocr_language: str, ocr_dpi: int):
+def _run_pdf_scan_from_bytes(job_id: str, file_content: bytes, use_ocr: bool, ocr_language: str, ocr_dpi: int):
     """Background task to scan a PDF from bytes and build chunks."""
     job_manager = JobManager()
+    temp_path = PDF_DIR / f"{uuid.uuid4().hex}.pdf"
 
     try:
         job_manager.update_job(job_id, status="running", progress=0, message="Initializing PDF scanner...")
 
-        temp_path = PDF_DIR / filename
-        with open(temp_path, "wb") as f:
-            f.write(file_content)
-
         db_config = DatabaseConfig.from_config_file()
         if not db_config.is_configured():
             raise RuntimeError("Database not configured")
+
+        with open(temp_path, "wb") as f:
+            f.write(file_content)
 
         scanner = PDFScanner(use_ocr=use_ocr, ocr_language=ocr_language, ocr_dpi=ocr_dpi)
         documents = scanner.scan_pdf(str(temp_path))
@@ -269,6 +273,11 @@ def _run_pdf_scan_from_bytes(job_id: str, file_content: bytes, filename: str, us
         )
     except Exception as e:
         job_manager.update_job(job_id, status="failed", error=str(e))
+    finally:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
 
 
 @app.post("/api/scrape", response_class=JSONResponse)
@@ -313,7 +322,7 @@ async def pdf_scan(
         job_manager.update_job(job_id, status="failed", error="File too large. Maximum size is 100MB.")
         raise HTTPException(status_code=413, detail="File too large. Maximum size is 100MB.")
 
-    background_tasks.add_task(_run_pdf_scan_from_bytes, job_id, file_content, file.filename, use_ocr, ocr_language, ocr_dpi)
+    background_tasks.add_task(_run_pdf_scan_from_bytes, job_id, file_content, use_ocr, ocr_language, ocr_dpi)
 
     return {"status": "started", "job_id": job_id}
 

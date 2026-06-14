@@ -1,100 +1,105 @@
 # REVIEW.md
 
+Last reviewed: 2026-06-14
+
 ## Summary
 
-- Core RAG pipeline is functional and reasonably structured.
-- Frontend/backend separation is clean: FastAPI serves API + static HTML, frontend is decoupled via configurable `apiBase`.
-- Debug logging uses centralized category-based filtering via `config/config.cfg` `[logging] categories` (no env vars needed).
-- Refactoring complete: `app.py` reduced from 366→102 lines. Processing logic moved to `processor/processor.py`.
-- Vector store abstraction added (`vector_store/` module) with numpy-backed `VectorIndex` and `VectorStore`.
-- Content-derived chunk categories implemented via lightweight TF keyword extractor (`chunker/keywords.py`).
-- Category filtering exposed in CLI (`-c`/`--category`) and wired into `recommend_documents()`.
+- Core RAG pipeline is functional and centered on PostgreSQL/pgvector for production search.
+- CLI and FastAPI share the same `recommend_documents()` search path.
+- Frontend/backend separation is clean: FastAPI serves API endpoints plus static HTML, while the frontend uses same-origin API paths.
+- FastAPI supports background scrape and PDF scan jobs through `web_frontend/job_manager.py`.
+- PDF uploads are written to generated temporary `.pdf` paths instead of client-supplied filenames.
+- CORS is disabled by default and can be enabled with an explicit origin allowlist.
+- Debug logging remains centralized and category-based via `config/config.cfg` `[logging] categories`.
+- `HF_TOKEN` is now injected into `os.environ` before embedding model load.
+- Category filtering is exposed in the CLI and FastAPI request model, and is pushed down into the PostgreSQL candidate search.
+- URL canonicalization is applied during crawling/ingestion, and the frontend deduplicates results by canonical URL key.
+- Hybrid keyword scoring uses stopword-filtered word-boundary matching.
 
 ---
 
 ## Critical / High
 
-### 1. Frontend FastAPI does not expose `categories` parameter
-`web_frontend/fastapi_app.py:25-32` `SearchRequest` lacks a `categories` field. The UI cannot filter by category even though the backend supports it.
-
-**Recommendation**: add `categories: Optional[List[str]] = None` to `SearchRequest` and pass it through to `recommend_documents()`.
-
----
-
-### 2. `scrape` CLI uses `typer.Abort` (CLI-only, safe)
-`app.py:233` raises `typer.Abort` in the `scrape` command. This is CLI-only and **not** reachable from FastAPI, so it's acceptable.
-
----
-
-### 3. CORS is wide-open
-`web_frontend/fastapi_app.py:13-19` allows `*` origins. Currently `allow_credentials=False` which mitigates some risk. Methods restricted to `GET` and `POST`.
-
-**Recommendation**: restrict to same-origin or a whitelist in production.
+None currently tracked.
 
 ---
 
 ## Medium
 
-### 4. `HF_TOKEN` defined but never injected
-`utils/config.py` reads `[hf] token` from `config/config.cfg`, and `embedding/embedding.py` defines `_get_hf_token()`, but the token is **not** passed to `SentenceTransformer(...)` or set as `os.environ["HF_TOKEN"]` before model load.
+### 3. Version pinning
 
-**Recommendation**: set `os.environ["HF_TOKEN"]` in `utils/config.py:_load()` or pass `use_auth_token=...` to `SentenceTransformer()`.
+`requirements.txt:1-13` has no upper bounds. A minor dependency release could introduce behavior changes or break compatibility.
 
----
-
-### 5. Query relevance for abstract / short queries
-Semantic search on `paraphrase-multilingual-MiniLM-L12-v2` maps short queries like "AI" or "how AI should be used" to GDPR concepts like "automated processing" and "data portability". Stopword filtering and word-boundary checks help slightly, but the model's training distribution causes the mismatch.
-
-**Mitigations available**:
-- Use longer, more specific queries
-- Use `--category` to narrow to relevant sections
-- Adjust `--hybrid-weight` (lower = more semantic, higher = more keyword)
+**Recommendation**: pin or constrain versions after compatibility testing.
 
 ---
 
-### 6. Version pinning
-`requirements.txt` has no upper bounds. A minor release could break the API.
+### 4. Config is cached at import time
+
+`utils/config.py:9-27` reads `config/config.cfg` once on import. Later config changes are ignored until the process restarts.
+
+**Recommendation**: add an explicit reload mechanism or avoid import-time caching for config-heavy workflows.
+
+---
+
+### 5. `SearchConfig.categories` is not loaded from config
+
+`vector_store/db_config.py:20-40` defines `categories`, but `from_config_file()` always returns `None`.
+
+**Recommendation**: either wire category defaults from `config.cfg` or remove the unused field.
+
+---
+
+### 6. Job state is in-memory only
+
+`web_frontend/job_manager.py:6-24` stores jobs in process memory. Server restarts lose job status and results.
+
+**Recommendation**: acceptable for local use; use Redis or a database-backed job store for production.
 
 ---
 
 ## Low
 
-### 7. Frontend `filter(Boolean)` hides falsy metadata
-`web_frontend/index.html:111` filters with `.filter(Boolean)`. A legitimately falsy value like `verse: 0` would be hidden. Consider `.filter(v => v != null && v !== "")`.
+### 9. Frontend still uses `filter(Boolean)` for location display
+
+`web_frontend/index.html:356` can hide falsy location values such as `verse: 0`.
+
+**Recommendation**: use `v != null && v !== ""` instead.
 
 ---
 
-### 8. `utils/config.py` caches at import time, no reload
-`_config` is populated on first import. Any later changes to `config/config.cfg` are ignored in the same process.
+### 10. Some chunk reads remain per-row
 
----
+`processor/processor.py:232-257` and `vector_store/db_store.py:185-190` loop over chunk IDs individually.
 
-### 9. Duplicate URLs (http vs https)
-Results often show the same document twice under `http://` and `https://` variants. Deduplication should canonicalize URLs.
+**Impact**: acceptable for small datasets, but batch queries would scale better.
 
 ---
 
 ## Fixed since last review
 
-- `web_frontend/fastapi_app.py`: Removed unused `use_db` parameter from `SearchRequest`
-- Removed `--use-db` from README.md documentation (PostgreSQL is used automatically when configured)
-- `app.py` reduced from 366→102 lines. Processing logic moved to `processor/processor.py`.
-- `embedding/embedding.py` now raises proper `MemoryError`, `ValueError`, `RuntimeError` instead of `typer.Abort`
-- `chunker/document.py` raises `MemoryError` (not `typer.Abort`)
-- `processor/processor.py` created with all processing functions extracted from `app.py`
-- `recommend_documents()` accepts `input_file` parameter
-- `hybrid_weight` clamping added
-- Debug logging uses `utils/logging.py` with category filtering from `config/config.cfg`
-- Cancel button added to frontend with AbortController support
-- Frontend fetches `/api/config` for `hybrid_weight` default
-- `scrape` command auto-builds chunks and embeddings after crawling
-- Vector store abstraction (`vector_store/`) replaces ad-hoc memmap logic
-- `chunker/keywords.py` — TF keyword extractor for content-derived categories
-- `Chunker._build_categories()` merges structural metadata + content keywords
-- `Chunker.from_dict()` backward-compatible: derives `categories` for old chunks
-- Category filtering (`--category`/`-c`) in CLI and `recommend_documents()`
-- Stopword filtering in keyword scoring
-- Word-boundary keyword overlap filter in `_gather_candidate_chunks()`
-- Frontend displays `location` (book/chapter/verse) and `path` from API response
-- `.kilo/` added to `.gitignore`
-- Multiprocessing semaphore leak warning suppressed via `utils/logging.py`
+- `web_frontend/fastapi_app.py`: `SearchRequest` now includes `categories` and passes them to `recommend_documents()`.
+- CORS is no longer wide-open: FastAPI only registers CORS when an explicit origin allowlist is configured.
+- PDF uploads no longer use client-supplied filenames; uploads are saved as generated temporary `.pdf` files and cleaned up after scanning.
+- Category filtering is pushed into PostgreSQL candidate search, so category-filtered searches no longer depend on post-retrieval filtering.
+- Hybrid keyword scoring now filters stopwords and matches whole words with word boundaries.
+- Frontend API calls now use same-origin paths instead of a hard-coded `127.0.0.1:8000` base URL.
+- Crawled and ingested URLs are canonicalized, and the frontend deduplicates search results by canonical URL key.
+- `HF_TOKEN` is injected into `os.environ` from `[hf] token`.
+- `scrape` CLI now raises `typer.Exit(1)` instead of `typer.Abort`.
+- `app.py` remains reduced from 366→102 lines; processing logic lives in `processor/processor.py`.
+- `embedding/embedding.py` and `chunker/document.py` raise proper exceptions instead of Typer aborts.
+- `processor/processor.py` contains the extracted search/ranking logic.
+- `hybrid_weight` clamping is implemented.
+- Debug logging uses `utils/logging.py` with category filtering from `config/config.cfg`.
+- Frontend cancel button uses `AbortController`.
+- Frontend fetches `/api/config` for configuration availability.
+- `scrape` command auto-builds chunks and embeddings after crawling.
+- Vector store abstraction (`vector_store/`) replaces ad-hoc memmap logic for production storage.
+- `chunker/keywords.py` provides a lightweight TF keyword extractor.
+- `Chunker._build_categories()` merges structural metadata, page metadata, and content keyword fallback.
+- `Chunk.from_dict()` is backward-compatible and derives categories for older chunks.
+- Category filtering (`--category`/`-c`) is wired into the CLI and `recommend_documents()`.
+- Frontend displays `location` and `path` from API responses.
+- `.kilo/` is added to `.gitignore`.
+- Multiprocessing semaphore leak warning is suppressed via `utils/logging.py`.

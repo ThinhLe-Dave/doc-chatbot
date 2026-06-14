@@ -143,8 +143,25 @@ class Scraper(DataCollector):
                     if url not in self.visited_urls and len(self.visited_urls) + len(queue) < max_pages:
                         queue.append(url)
 
+    def _canonical_netloc(self, netloc: str) -> str:
+        return netloc.lower().removeprefix("www.")
+
+    def _canonical_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return ""
+
+        base = getattr(self, "base_url", url)
+        scheme = urlparse(base).scheme or parsed.scheme
+        netloc = self._canonical_netloc(parsed.netloc)
+        path = parsed.path or "/"
+        if path != "/":
+            path = path.rstrip("/")
+
+        return urlunparse((scheme, netloc, path, "", "", ""))
+
     def _normalize_url(self, url: str) -> str:
-        """Normalize a URL by resolving relative paths, stripping fragments, and normalizing the path."""
+        """Normalize a URL by resolving relative paths and canonicalizing scheme, host, and path."""
         if not url:
             return ""
 
@@ -155,18 +172,12 @@ class Scraper(DataCollector):
         if parsed.scheme not in {"http", "https"}:
             return ""
 
-        scheme = parsed.scheme.lower()
-        netloc = parsed.netloc.lower()
-        path = parsed.path or "/"
-        if path != "/" and path.endswith("/"):
-            path = path.rstrip("/")
-
-        return urlunparse((scheme, netloc, path, "", "", ""))
+        return self._canonical_url(absolute)
 
     def _is_internal(self, url: str) -> bool:
         """Return True when the URL belongs to the same domain being crawled."""
         parsed = urlparse(url)
-        return parsed.scheme in {"http", "https"} and parsed.netloc == self.domain
+        return parsed.scheme in {"http", "https"} and self._canonical_netloc(parsed.netloc) == self._canonical_netloc(self.domain)
 
     def _setup_robots_parser(self) -> RobotFileParser:
         """Load robots.txt for the current domain so the crawler can obey access rules."""

@@ -35,6 +35,24 @@ def get_hf_token() -> str:
     return get("hf", "token", "") or os.environ.get("HF_TOKEN", "")
 
 
+def _parse_bool(value: str, default: bool = False) -> bool:
+    if not value:
+        return default
+    return value.strip().lower() in ("true", "1", "yes", "on")
+
+
+def get_cors_allowed_origins() -> List[str]:
+    raw = get("cors", "allowed_origins", "") or os.environ.get("CORS_ALLOW_ORIGINS", "")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+def get_cors_allow_credentials() -> bool:
+    return _parse_bool(
+        get("cors", "allow_credentials", "") or os.environ.get("CORS_ALLOW_CREDENTIALS", ""),
+        False,
+    )
+
+
 # Search configuration defaults
 SEARCH_DEFAULTS = {
     "top_k": 10,

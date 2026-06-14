@@ -68,6 +68,19 @@ SQL_SEARCH_SIMILAR = """
     LIMIT %s
 """
 
+SQL_SEARCH_SIMILAR_WITH_CATEGORIES = """
+    SELECT c.id, c.document_id, embedding <=> %s::vector AS score
+    FROM embeddings e
+    JOIN chunks c ON e.chunk_id = c.id
+    WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(c.metadata->'categories') AS cat
+        WHERE lower(cat) = ANY(%s::text[])
+    )
+    ORDER BY score ASC
+    LIMIT %s
+"""
+
 
 def insert_document(cur, doc_id: str, source: str, title: str, path: list, metadata: dict) -> None:
     """Insert a document record."""
