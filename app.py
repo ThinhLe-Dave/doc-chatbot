@@ -104,6 +104,9 @@ def build_chunk_cache(input_file: str, chunk_file: str):
 def scrape(
     url: Optional[str] = typer.Argument(None, help="The starting URL to scrape"),
     limit: int = typer.Option(10000, "--limit", "-l", help="Limit the number of pages to scrape"),
+    sitemap_first: bool = typer.Option(False, "--sitemap-first", help="Discover URLs from sitemap before link crawling"),
+    force: bool = typer.Option(False, "--force", help="Force reprocess even if HTTP validators indicate unchanged content"),
+    no_robots: bool = typer.Option(False, "--no-robots", help="Ignore robots.txt rules"),
 ):
     """
     **Document Chatbot Data Scraper**
@@ -123,8 +126,11 @@ def scrape(
     print("🚀 Starting the web scraper...")
     print(f"Starting crawl on: {url}...")
 
-    scraper = Scraper(base_url=url)
-    scraper.crawl(max_pages=limit)
+    scraper = Scraper(base_url=url, sitemap_first=sitemap_first, obey_robots=not no_robots)
+    scraper.crawl(max_pages=limit, force=force)
+
+    metrics = scraper.metrics
+    print(f"Discovery metrics - discovered: {metrics['discovered']}, fetched: {metrics['fetched']}, skipped: {metrics['skipped']}, failed: {metrics['failed']}")
 
     model = get_embedding_model()
     store = PostgresVectorStore(config=db_config)
@@ -167,6 +173,8 @@ def pdf_scan(
     use_ocr: Annotated[Optional[bool], typer.Option("--ocr/--no-ocr", help="Use OCR fallback for scanned or badly spaced PDFs")] = None,
     ocr_language: Annotated[str, typer.Option("--ocr-language", help="Tesseract language code for OCR")] = "eng",
     ocr_dpi: Annotated[int, typer.Option("--ocr-dpi", help="Rendering DPI for OCR")] = 200,
+    ocr_preprocess: Annotated[bool, typer.Option("--ocr-preprocess/--no-ocr-preprocess", help="Preprocess OCR images (grayscale, binarize, denoise)")] = False,
+    force: Annotated[bool, typer.Option("--force", help="Force reprocess even if unchanged pages are detected")] = False,
 ):
     """
     **PDF Scanner**
@@ -189,7 +197,7 @@ def pdf_scan(
 
     typer.echo(f"Scanning PDF: {path}...")
 
-    scanner = PDFScanner(use_ocr=use_ocr, ocr_language=ocr_language, ocr_dpi=ocr_dpi)
+    scanner = PDFScanner(use_ocr=use_ocr, ocr_language=ocr_language, ocr_dpi=ocr_dpi, ocr_preprocess=ocr_preprocess)
     documents = scanner.scan_pdf(path)
 
     model = get_embedding_model()

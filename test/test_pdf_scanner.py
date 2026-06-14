@@ -14,6 +14,9 @@ from datacollector.pdf_scanner import (
     PDFScanner,
     _clean_extracted_text,
     _looks_like_broken_pdf_text,
+    _parse_page_ranges,
+    compute_chapter_pages,
+    preflight_chapters,
     scan_and_build_chunks,
 )
 
@@ -62,13 +65,13 @@ class PDFScannerTest(unittest.TestCase):
     @patch("datacollector.pdf_scanner.PdfReader")
     def test_scan_pdf_uses_ocr_when_pypdf_text_is_broken(self, mock_reader_cls):
         mock_page = MagicMock()
-        mock_page.extract_text.return_value = "Right t o erasure. " * 20
+        mock_page.extract_text.return_value = "Right t o erasure."
         mock_reader = MagicMock()
         mock_reader.pages = [mock_page]
         mock_reader_cls.return_value = mock_reader
 
-        scanner = PDFScanner()
-        scanner._ocr_page = MagicMock(return_value="Right to erasure.")
+        scanner = PDFScanner(use_ocr=True)
+        scanner._ocr_page = MagicMock(return_value=("Right to erasure.", 0.8))
 
         docs = scanner.scan_pdf(self.pdf_path)
 

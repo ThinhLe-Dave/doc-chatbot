@@ -1,3 +1,4 @@
+import hashlib
 import json
 from typing import TYPE_CHECKING
 
@@ -28,11 +29,28 @@ SQL_CREATE_CHUNKS_TABLE = """
 
 SQL_CREATE_EMBEDDINGS_TABLE_TEMPLATE = "CREATE TABLE IF NOT EXISTS embeddings (chunk_id TEXT PRIMARY KEY REFERENCES chunks(id), embedding VECTOR({dim}))"
 
-SQL_INSERT_DOCUMENT = """
+SQL_UPSERT_DOCUMENT = """
     INSERT INTO documents (id, source, title, path, metadata)
     VALUES (%s, %s, %s, %s, %s)
-    ON CONFLICT (id) DO NOTHING
+    ON CONFLICT (id) DO UPDATE SET
+        source = EXCLUDED.source,
+        title = EXCLUDED.title,
+        path = EXCLUDED.path,
+        metadata = EXCLUDED.metadata
 """
+
+SQL_UPSERT_DOCUMENT_METADATA = """
+    UPDATE documents
+    SET metadata = jsonb_set(
+        COALESCE(metadata, '{}'),
+        %s,
+        to_jsonb(%s),
+        true
+    )
+    WHERE id = %s
+"""
+
+SQL_INSERT_DOCUMENT = SQL_UPSERT_DOCUMENT
 
 SQL_INSERT_CHUNK = """
     INSERT INTO chunks (id, document_id, content, path, metadata)
@@ -51,6 +69,42 @@ SQL_INSERT_EMBEDDING = """
 """
 
 SQL_DROP_TABLES = "DROP TABLE IF EXISTS embeddings, chunks, documents CASCADE"
+
+SQL_CREATE_JOBS_TABLE = """
+    CREATE TABLE IF NOT EXISTS jobs (
+        id TEXT PRIMARY KEY,
+        job_type TEXT,
+        status TEXT,
+        progress INTEGER,
+        message TEXT,
+        error TEXT,
+        result JSONB,
+        created_at TIMESTAMPTZ DEFAULT now(),
+        updated_at TIMESTAMPTZ DEFAULT now(),
+        started_at TIMESTAMPTZ,
+        finished_at TIMESTAMPTZ,
+        input_payload JSONB
+    )
+"""
+
+SQL_UPSERT_JOB = """
+    INSERT INTO jobs (id, job_type, status, progress, message, error, result, started_at, finished_at, input_payload)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (id) DO UPDATE SET
+        status = EXCLUDED.status,
+        progress = EXCLUDED.progress,
+        message = EXCLUDED.message,
+        error = EXCLUDED.error,
+        result = EXCLUDED.result,
+        started_at = COALESCE(jobs.started_at, EXCLUDED.started_at),
+        finished_at = EXCLUDED.finished_at,
+        updated_at = now(),
+        input_payload = EXCLUDED.input_payload
+"""
+
+SQL_GET_JOB = "SELECT id, job_type, status, progress, message, error, result, created_at, updated_at, started_at, finished_at, input_payload FROM jobs WHERE id = %s"
+
+SQL_RECENT_JOBS = "SELECT id, job_type, status, progress, message, error, result, started_at, finished_at FROM jobs ORDER BY created_at DESC LIMIT %s"
 
 SQL_COUNT_CHUNKS = "SELECT COUNT(*) FROM chunks"
 
@@ -83,8 +137,20 @@ SQL_SEARCH_SIMILAR_WITH_CATEGORIES = """
 
 
 def insert_document(cur, doc_id: str, source: str, title: str, path: list, metadata: dict) -> None:
-    """Insert a document record."""
-    cur.execute(SQL_INSERT_DOCUMENT, (doc_id, source, title, json.dumps(path), json.dumps(metadata)))
+    """Upsert a document record."""
+    cur.execute(SQL_UPSERT_DOCUMENT, (doc_id, source, title, json.dumps(path), json.dumps(metadata)))
+
+
+def upsert_document(cur, doc_id: str, source: str, title: str, path: list, metadata: dict) -> None:
+    """Alias for insert_document with upsert behavior."""
+    insert_document(cur, doc_id, source, title, path, metadata)
+
+
+def update_document_metadata(cur, doc_id: str, keys: list, values: list) -> None:
+    cursor = cur
+    if not isinstance(keys, (list, tuple)) or len(keys) != 1:
+        raise ValueError("update_document_metadata currently supports a single dotted key.")
+    cursor.execute(SQL_UPSERT_DOCUMENT_METADATA, (keys[0], values[0], doc_id))
 
 
 def insert_chunk(cur, chunk_id: str, document_id: str, content: str, path: list, metadata: dict) -> None:
@@ -112,3 +178,8 @@ def store_chunk_batch(conn, chunks: list, model) -> None:
         for chunk, embedding in zip(chunks, embeddings):
             cur.execute(SQL_INSERT_CHUNK, (chunk.id, chunk.document_id, chunk.content, json.dumps(chunk.path), json.dumps(chunk.metadata)))
             cur.execute(SQL_INSERT_EMBEDDING, (chunk.id, embedding.tolist()))
+
+
+def compute_content_hash(content: str) -> str:
+    normalized = " ".join((content or "").split()).encode("utf-8", errors="ignore")
+    return hashlib.sha256(normalized).hexdigest()

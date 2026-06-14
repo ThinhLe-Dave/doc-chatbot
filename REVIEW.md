@@ -10,11 +10,17 @@ Last reviewed: 2026-06-14
 - FastAPI supports background scrape and PDF scan jobs through `web_frontend/job_manager.py`.
 - PDF uploads are written to generated temporary `.pdf` paths instead of client-supplied filenames.
 - CORS is disabled by default and can be enabled with an explicit origin allowlist.
-- Debug logging remains centralized and category-based via `config/config.cfg` `[logging] categories`.
+- Debug logging remains centralized and category-based via `config/config.cfg` `[logging] categories.
 - `HF_TOKEN` is now injected into `os.environ` before embedding model load.
 - Category filtering is exposed in the CLI and FastAPI request model, and is pushed down into the PostgreSQL candidate search.
 - URL canonicalization is applied during crawling/ingestion, and the frontend deduplicates results by canonical URL key.
 - Hybrid keyword scoring uses stopword-filtered word-boundary matching.
+- Document upserts are now idempotent with content hashing.
+- Web scraping supports sitemap-first discovery, HTTP validators, retries, and incremental skip logic.
+- PDF scans track source/page hashes, OCR confidence, and page quality metadata.
+- Background jobs persist to PostgreSQL on startup; `/api/jobs/{job_id}` loads from DB first.
+- Chunk retrieval in processor paths is batched via `ANY(%s)`.
+- CLI/UI expose `--sitemap-first`, `--force`, `--ocr-preprocess`, and related controls.
 
 ---
 

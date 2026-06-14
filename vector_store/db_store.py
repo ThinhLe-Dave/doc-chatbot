@@ -13,12 +13,14 @@ from utils.db_utils import (
     SQL_CREATE_DOCUMENTS_TABLE,
     SQL_CREATE_CHUNKS_TABLE,
     SQL_CREATE_EMBEDDINGS_TABLE_TEMPLATE,
-    SQL_INSERT_DOCUMENT,
+    SQL_UPSERT_DOCUMENT,
     SQL_INSERT_CHUNK,
     SQL_INSERT_EMBEDDING,
     SQL_SEARCH_SIMILAR,
     SQL_SEARCH_SIMILAR_WITH_CATEGORIES,
     SQL_GET_CHUNK_BY_ID,
+    SQL_GET_CHUNKS_BY_IDS,
+    SQL_GET_CHUNK_CONTENT,
     SQL_COUNT_CHUNKS,
 )
 
@@ -91,11 +93,11 @@ class PostgresVectorStore:
 
                 for chunk, embedding in zip(batch, batch_embeddings):
                     if chunk.document_id not in seen_docs:
+                        seen_docs.add(chunk.document_id)
                         cur.execute(
-                            SQL_INSERT_DOCUMENT,
+                            SQL_UPSERT_DOCUMENT,
                             (chunk.document_id, chunk.metadata.get("source", ""), chunk.metadata.get("title", ""), json.dumps(chunk.path), json.dumps(chunk.metadata)),
                         )
-                        seen_docs.add(chunk.document_id)
                     cur.execute(
                         SQL_INSERT_CHUNK,
                         (chunk.id, chunk.document_id, chunk.content, json.dumps(chunk.path), json.dumps(chunk.metadata)),
@@ -156,11 +158,11 @@ class PostgresVectorStore:
         with conn.cursor() as cur:
             for chunk in iter_chunks_from_json(chunk_file):
                 if chunk.document_id not in seen_docs:
+                    seen_docs.add(chunk.document_id)
                     cur.execute(
-                        SQL_INSERT_DOCUMENT,
+                        SQL_UPSERT_DOCUMENT,
                         (chunk.document_id, chunk.metadata.get("source", ""), chunk.metadata.get("title", ""), json.dumps(chunk.path), json.dumps(chunk.metadata)),
                     )
-                    seen_docs.add(chunk.document_id)
                 cur.execute(
                     SQL_INSERT_CHUNK,
                     (chunk.id, chunk.document_id, chunk.content, json.dumps(chunk.path), json.dumps(chunk.metadata)),
@@ -174,22 +176,20 @@ class PostgresVectorStore:
         """Retrieve multiple chunks by their IDs."""
         conn = self._get_connection()
         with conn.cursor() as cur:
-            chunks = []
-            for chunk_id in chunk_ids:
-                cur.execute(
-                    SQL_GET_CHUNK_BY_ID,
-                    (chunk_id,)
-                )
-                row = cur.fetchone()
-                if row:
-                    chunks.append({
-                        "id": row[0],
-                        "document_id": row[1],
-                        "content": row[2],
-                        "path": row[3] if row[3] else [],
-                        "metadata": row[4] if row[4] else {},
-                    })
-            return chunks
+            cur.execute(
+                SQL_GET_CHUNKS_BY_IDS,
+                (list(chunk_ids),),
+            )
+            return [
+                {
+                    "id": row[0],
+                    "document_id": row[1],
+                    "content": row[2],
+                    "path": row[3] if row[3] else [],
+                    "metadata": row[4] if row[4] else {},
+                }
+                for row in cur.fetchall()
+            ]
 
     def get_chunk(self, chunk_id: str) -> Optional[dict]:
         """Retrieve chunk data by ID."""

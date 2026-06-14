@@ -28,6 +28,8 @@
         .status.error { color: #dc2626; }
         .progress { margin-top: 8px; height: 20px; background: #e2e8f0; border-radius: 10px; overflow: hidden; border: 1px solid #cbd5e1; }
         .progress-bar { height: 100%; background: linear-gradient(90deg, #2563eb, #3b82f6); transition: width 0.3s ease; display: flex; align-items: center; justify-content: flex-end; color: #fff; font-size: 11px; font-weight: 600; padding-right: 8px; }
+        .progress-bar.polling { animation: pollPulse 1s linear infinite; }
+        @keyframes pollPulse { 0%,100%{opacity:1} 50%{opacity:.7} }
         .results { margin-top: 22px; display: grid; gap: 18px; }
         .result { background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 18px; transition: transform .04s ease; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .result h2 { font-size: 16px; margin: 0 0 4px; color: #0f172a; }
@@ -78,6 +80,16 @@
                         <input id="scrapeMaxPages" type="number" value="100" min="1" max="500" />
                     </label>
                 </div>
+                <div class="row" style="margin-top: 8px;">
+                    <label>
+                        <input id="scrapeSitemapFirst" type="checkbox" />
+                        Use sitemap first
+                    </label>
+                    <label>
+                        <input id="scrapeForce" type="checkbox" />
+                        Force reprocess
+                    </label>
+                </div>
                 <div style="margin-top: 12px;">
                     <button id="scrapeBtn">Start Website Scraping</button>
                 </div>
@@ -85,6 +97,7 @@
                 <div id="scrape-progress" class="progress" style="display: none;">
                     <div class="progress-bar" id="scrape-progress-bar" style="width: 0%"></div>
                 </div>
+                <div id="scrape-metrics" class="job-status" style="display: none; margin-top: 8px;"></div>
             </div>
             
             <div id="pdfscan-section" class="section">
@@ -99,6 +112,14 @@
                     <label>
                         <input id="pdfUseOcr" type="checkbox" />
                         Use OCR (for scanned/image-only PDFs)
+                    </label>
+                    <label>
+                        <input id="pdfOcrPreprocess" type="checkbox" />
+                        Preprocess OCR images
+                    </label>
+                    <label>
+                        <input id="pdfForce" type="checkbox" />
+                        Force reprocess
                     </label>
                     <label>
                         OCR Language
@@ -208,6 +229,8 @@
         async function scrapeWebsite() {
             const url = $('scrapeUrl').value.trim();
             const maxPages = parseInt($('scrapeMaxPages').value) || 100;
+            const sitemapFirst = $('scrapeSitemapFirst').checked;
+            const force = $('scrapeForce').checked;
             if (!url) return;
 
             const status = $('scrape-status');
@@ -226,6 +249,8 @@
                 const formData = new FormData();
                 formData.append('url', url);
                 formData.append('max_pages', maxPages);
+                formData.append('sitemap_first', String(sitemapFirst));
+                formData.append('force', String(force));
 
                 const res = await fetch(`${API_BASE}/api/scrape`, {
                     method: 'POST',
@@ -269,7 +294,9 @@
             try {
                 const formData = new FormData();
                 formData.append('file', fileInput.files[0]);
-                formData.append('use_ocr', $('pdfUseOcr').checked);
+                formData.append('use_ocr', String($('pdfUseOcr').checked));
+                formData.append('ocr_preprocess', String($('pdfOcrPreprocess').checked));
+                formData.append('force', String($('pdfForce').checked));
                 formData.append('ocr_language', $('pdfOcrLanguage').value);
                 formData.append('ocr_dpi', $('pdfOcrDpi').value);
 
@@ -304,13 +331,20 @@
             const progressBar = $(jobType + '-progress-bar');
             const btn = jobType === 'scrape' ? $('scrapeBtn') : $('pdfScanBtn');
 
+            let lastPollProgress = -1;
             pollInterval = setInterval(async () => {
                 try {
                     const res = await fetch(`${API_BASE}/api/jobs/${currentJobId}`);
                     const data = await res.json();
 
-                    if (data.progress !== undefined) {
-                        progressBar.style.width = data.progress + '%'; progressBar.textContent = data.progress + "%";
+                    if (data.status === 'running') {
+                        if (typeof data.progress === 'number') {
+                            lastPollProgress = data.progress;
+                        } else {
+                            lastPollProgress = Math.min(lastPollProgress + 5, 95);
+                        }
+                        progressBar.style.width = lastPollProgress + '%';
+                        progressBar.textContent = lastPollProgress + "%";
                     }
 
                     if (data.message) {
@@ -318,7 +352,9 @@
                     }
 
                     if (data.status === 'completed') {
+                        lastPollProgress = 100;
                         clearInterval(pollInterval);
+                        progressBar.classList.remove('polling');
                         status.className = 'job-status success';
                         if (data.result) {
                             const resultText = jobType === 'scrape' 
@@ -329,6 +365,7 @@
                         btn.disabled = false;
                     } else if (data.status === 'failed') {
                         clearInterval(pollInterval);
+                        progressBar.classList.remove('polling');
                         status.className = 'job-status error';
                         status.textContent = 'Failed: ' + (data.error || 'Unknown error');
                         progressBar.style.width = '0%'; progressBar.textContent = "0%";

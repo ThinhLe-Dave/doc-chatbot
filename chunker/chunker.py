@@ -7,6 +7,7 @@ import re
 from functools import lru_cache
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
+from chunker.document import compute_content_hash, Document
 from chunker.keywords import extract_keywords as _extract_keywords
 
 _SENTENCE_END_RE = re.compile(r'(?<=[.!?])\s+')
@@ -319,10 +320,13 @@ class Chunk:
                 if value and str(value) not in derived:
                     derived.append(str(value))
             meta["categories"] = derived
+        content = data.get("content", "")
+        meta.setdefault("source_hash", compute_content_hash(meta.get("source_hash") or content))
+        meta.setdefault("document_hash", compute_content_hash(meta.get("document_hash") or content))
         return Chunk(
             id=data.get("id", ""),
             document_id=data.get("document_id", ""),
-            content=data.get("content", ""),
+            content=content,
             path=data.get("path", []),
             metadata=meta,
         )
@@ -470,14 +474,28 @@ class Chunker:
         metadata = metadata or {}
         chunk_texts = self._split_text(content)
         path = self._build_chunk_path(metadata)
-
+        source_hash = metadata.get("source_hash") or compute_content_hash(content)
+        document_hash = compute_content_hash(metadata.get("title", "") + "\n" + content)
+        bases = {
+            "source": metadata.get("source", ""),
+            "document_id": document_id,
+            "title": metadata.get("title", ""),
+            "source_hash": source_hash,
+            "document_hash": document_hash,
+            "book": metadata.get("book"),
+            "chapter": metadata.get("chapter"),
+            "page": metadata.get("page"),
+            "total_pages": metadata.get("total_pages"),
+            "extraction_method": metadata.get("extraction_method"),
+            "ocr_confidence": metadata.get("ocr_confidence"),
+        }
         return [
             Chunk(
                 id=f"{document_id}_chunk_{index}",
                 document_id=document_id,
                 content=chunk_text,
                 path=path,
-                metadata={**metadata, "chunk_index": index, "categories": self._build_categories(metadata, chunk_text)},
+                metadata={**metadata, "chunk_index": index, "source_hash": source_hash, "document_hash": document_hash, "categories": self._build_categories(metadata, chunk_text), **{k: v for k, v in bases.items() if v}},
             )
             for index, chunk_text in enumerate(chunk_texts)
         ]

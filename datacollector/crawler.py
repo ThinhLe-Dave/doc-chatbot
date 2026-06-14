@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import concurrent.futures
+import hashlib
 import json
 import logging
 import time
@@ -12,6 +15,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from datacollector.base import DataCollector
+from chunker.document import compute_content_hash
 
 
 class Scraper(DataCollector):
@@ -22,6 +26,9 @@ class Scraper(DataCollector):
         delay: float = 0.25,
         obey_robots: bool = True,
         max_workers: int = 6,
+        max_response_bytes: int = 10 * 1024 * 1024,
+        retries: int = 3,
+        sitemap_first: bool = False,
     ):
         super().__init__(output_file)
         self.base_url = self._normalize_url(base_url)
@@ -37,6 +44,17 @@ class Scraper(DataCollector):
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "DocChatbotCrawler/1.0 (+https://example.com)"})
         self.robots_parser = self._setup_robots_parser() if obey_robots else None
+        self.max_response_bytes = max_response_bytes
+        self.retries = retries
+        self.sitemap_first = sitemap_first
+        self.canonical_cache: dict[str, str] = {}
+        self.metrics = {
+            "discovered": 0,
+            "fetched": 0,
+            "skipped": 0,
+            "failed": 0,
+            "bytes": 0,
+        }
 
         logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
         self.logger = logging.getLogger(__name__)
@@ -70,14 +88,35 @@ class Scraper(DataCollector):
                     time.sleep(wait_time)
             self.last_request_time = time.monotonic()
 
-    def _fetch_page(self, url: str):
-        try:
-            self._polite_sleep()
-            response = self.session.get(url, timeout=10)
-            response.raise_for_status()
-            return url, response, None
-        except requests.RequestException as e:
-            return url, None, e
+    def _fetch_page(self, url: str, last_modified: str = "", etag: str = ""):
+        headers = {}
+        if etag:
+            headers["If-None-Match"] = etag
+        if last_modified:
+            headers["If-Modified-Since"] = last_modified
+
+        session = self.session
+        for attempt in range(1, self.retries + 1):
+            try:
+                self._polite_sleep()
+                response = session.get(url, headers=headers, timeout=10, stream=True)
+                if response.status_code == 304:
+                    return url, response, None, True
+                response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "")
+                if "text/html" not in content_type and "text" not in content_type:
+                    return url, response, ValueError(f"unsupported content type: {content_type}"), False
+                body = b""
+                for chunk in response.iter_content(8192):
+                    body += chunk
+                    if len(body) > self.max_response_bytes:
+                        return url, None, ValueError("response exceeded max size"), False
+                response.text = body.decode(response.encoding or "utf-8", errors="ignore")
+                return url, response, None, False
+            except requests.RequestException as e:
+                if attempt == self.retries:
+                    return url, None, e, False
+                time.sleep(0.5 * attempt)
 
     def _process_url(self, url: str, soup: BeautifulSoup):
         new_urls = []
@@ -100,48 +139,81 @@ class Scraper(DataCollector):
 
         return new_urls
 
-    def crawl(self, current_url: str = None, max_pages: int = 20):
+    def _get_canonical_url(self, url: str) -> str:
+        if url in self.canonical_cache:
+            return self.canonical_cache[url]
+        canonical = self._canonical_url(url)
+        self.canonical_cache[url] = canonical
+        return canonical
+
+    def crawl(self, current_url: str = None, max_pages: int = 20, force: bool = False):
         """Crawl a website using a queue and visit only internal URLs."""
         start_url = self._normalize_url(current_url or self.base_url)
-        queue = deque([start_url])
+        self.domain = urlparse(start_url).netloc
+        queue: deque[str] = deque()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            while queue and len(self.visited_urls) < max_pages:
-                batch = []
-                while queue and len(batch) < self.max_workers:
-                    url = queue.popleft()
-                    if not url or url in self.visited_urls:
-                        continue
-                    if not self._can_fetch(url):
-                        self.logger.warning(f"Skipping disallowed URL by robots.txt: {url}")
-                        continue
-                    batch.append(url)
+        if self.sitemap_first and not force:
+            sitemap_urls = self._discover_sitemap_urls()
+            for url in sitemap_urls:
+                if url not in self.visited_urls:
+                    queue.append(url)
+            self.logger.info(f"Seeded {len(sitemap_urls)} sitemap URL(s)")
 
-                if not batch:
-                    break
+        if not queue:
+            queue.append(start_url)
 
-                self.visited_urls.update(batch)
-                self.logger.info(f"Processing batch: {len(batch)} url(s)")
+        while queue and len(self.visited_urls) < max_pages:
+            batch = []
+            while queue and len(batch) < self.max_workers:
+                url = queue.popleft()
+                if not url or url in self.visited_urls:
+                    continue
+                if not self._can_fetch(url):
+                    self.logger.warning(f"Skipping disallowed URL by robots.txt: {url}")
+                    continue
+                batch.append(url)
 
+            if not batch:
+                break
+
+            self.visited_urls.update(batch)
+            self.metrics["discovered"] += len(batch)
+            self.logger.info(f"Processing batch: {len(batch)} url(s)")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch), self.max_workers)) as executor:
                 futures = {executor.submit(self._fetch_page, url): url for url in batch}
                 pending_urls = []
 
                 for future in concurrent.futures.as_completed(futures):
-                    url, response, error = future.result()
+                    url = futures[future]
+                    url, response, error, not_modified = future.result()
                     if error:
-                        self.logger.error(f"Failed to fetch {url}: {error}")
+                        if isinstance(error, ValueError) and "response exceeded max size" in str(error):
+                            self.logger.warning(f"Skipped oversized response for {url}")
+                            self.metrics["skipped"] += 1
+                        else:
+                            self.logger.error(f"Failed to fetch {url}: {error}")
+                            self.metrics["failed"] += 1
+                        continue
+
+                    if not_modified and not force:
+                        self.logger.info(f"Not modified: {url}")
+                        self.metrics["skipped"] += 1
                         continue
 
                     try:
                         soup = BeautifulSoup(response.text, "html.parser")
                         new_urls = self._process_url(url, soup)
                         pending_urls.extend(new_urls)
+                        self.metrics["fetched"] += 1
+                        self.metrics["bytes"] += len(response.text.encode("utf-8", errors="ignore"))
                     except Exception as e:
                         self.logger.error(f"Failed to parse {url}: {e}")
+                        self.metrics["failed"] += 1
 
-                for url in pending_urls:
-                    if url not in self.visited_urls and len(self.visited_urls) + len(queue) < max_pages:
-                        queue.append(url)
+            for url in pending_urls:
+                if url not in self.visited_urls and len(self.visited_urls) + len(queue) < max_pages:
+                    queue.append(url)
 
     def _canonical_netloc(self, netloc: str) -> str:
         return netloc.lower().removeprefix("www.")
@@ -209,6 +281,48 @@ class Scraper(DataCollector):
         )
         target = main_area if main_area else content_soup
         return target.get_text(separator=" ", strip=True)
+
+    def _parse_sitemap(self, sitemap_url: str) -> list[str]:
+        urls = []
+        try:
+            response = self.session.get(sitemap_url, timeout=10)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "xml")
+            for loc in soup.find_all("loc"):
+                url = loc.get_text(strip=True)
+                if url:
+                    urls.append(url)
+        except Exception as e:
+            self.logger.warning(f"Failed to load sitemap {sitemap_url}: {e}")
+        return urls
+
+    def _discover_sitemap_urls(self) -> list[str]:
+        urls = []
+        robots_url = urlunparse((urlparse(self.base_url).scheme, self.domain, "/robots.txt", "", "", ""))
+        try:
+            response = self.session.get(robots_url, timeout=10)
+            if response.status_code == 200:
+                for line in response.text.splitlines():
+                    line = line.strip()
+                    if line.lower().startswith("sitemap:"):
+                        sitemap_url = line.split(":", 1)[1].strip()
+                        urls.extend(self._parse_sitemap(sitemap_url))
+        except Exception:
+            pass
+
+        if not urls:
+            for path in ["/sitemap.xml", "/sitemap_index.xml"]:
+                sitemap_url = urlunparse((urlparse(self.base_url).scheme, self.domain, path, "", "", ""))
+                urls.extend(self._parse_sitemap(sitemap_url))
+
+        seen = set()
+        result = []
+        for url in urls:
+            canonical = self._canonical_url(url)
+            if canonical and canonical not in seen:
+                seen.add(canonical)
+                result.append(canonical)
+        return result
 
 
 def scrape_and_build_chunks(url: str, output_file: str = "website_data.json", limit: int = 10000) -> tuple:

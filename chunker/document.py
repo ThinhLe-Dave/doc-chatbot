@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -41,6 +42,11 @@ def _log_memory_error(operation: str, details: str = "") -> None:
         fg=typer.colors.RED,
         err=True,
     )
+
+
+def compute_content_hash(content: str) -> str:
+    normalized = " ".join((content or "").split()).encode("utf-8", errors="ignore")
+    return hashlib.sha256(normalized).hexdigest()
 
 
 def canonicalize_url(url: str) -> str:

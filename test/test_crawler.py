@@ -37,7 +37,7 @@ class ScraperTest(unittest.TestCase):
 
     @patch("datacollector.crawler.Scraper._fetch_page")
     def test_crawl_collects_pages(self, mock_fetch):
-        mock_fetch.return_value = ("http://example.com", MagicMock(text=MockResponse.text), None)
+        mock_fetch.return_value = ("http://example.com", MagicMock(text=MockResponse.text), None, False)
 
         scraper = Scraper(base_url="http://example.com", output_file=self.output_path)
         scraper.crawl(max_pages=1)
@@ -46,7 +46,7 @@ class ScraperTest(unittest.TestCase):
 
     @patch("datacollector.crawler.Scraper._fetch_page")
     def test_scan_collects_pages(self, mock_fetch):
-        mock_fetch.return_value = ("http://example.com", MagicMock(text=MockResponse.text), None)
+        mock_fetch.return_value = ("http://example.com", MagicMock(text=MockResponse.text), None, False)
 
         scraper = Scraper(base_url="http://example.com", output_file=self.output_path)
         result = scraper.scan()
@@ -56,7 +56,7 @@ class ScraperTest(unittest.TestCase):
 
     @patch("datacollector.crawler.Scraper._fetch_page")
     def test_collect_returns_scraped_data(self, mock_fetch):
-        mock_fetch.return_value = ("http://example.com", MagicMock(text=MockResponse.text), None)
+        mock_fetch.return_value = ("http://example.com", MagicMock(text=MockResponse.text), None, False)
 
         scraper = Scraper(base_url="http://example.com", output_file=self.output_path)
         result = scraper.collect("http://example.com")
@@ -65,11 +65,10 @@ class ScraperTest(unittest.TestCase):
 
     @patch("datacollector.crawler.Scraper._fetch_page")
     def test_export_to_json(self, mock_fetch):
-        mock_fetch.return_value = ("http://example.com", MagicMock(text=MockResponse.text), None)
+        mock_fetch.return_value = ("http://example.com", MagicMock(text=MockResponse.text), None, False)
 
         scraper = Scraper(base_url="http://example.com", output_file=self.output_path)
         scraper.crawl(max_pages=1)
-        # Add mock data that's JSON serializable
         scraper.scraped_data = [{"url": "http://example.com", "title": "Test", "body": "Test content"}]
         result_path = scraper.export_to_json()
 

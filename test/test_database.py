@@ -163,6 +163,9 @@ class SQLQueriesTest(unittest.TestCase):
             SQL_INSERT_CHUNK,
             SQL_INSERT_EMBEDDING,
             SQL_SEARCH_SIMILAR,
+            SQL_CREATE_JOBS_TABLE,
+            SQL_UPSERT_JOB,
+            SQL_GET_JOB,
         )
         
         self.assertIn("CREATE TABLE", SQL_CREATE_DOCUMENTS_TABLE)
@@ -171,6 +174,34 @@ class SQLQueriesTest(unittest.TestCase):
         self.assertIn("INSERT INTO chunks", SQL_INSERT_CHUNK)
         self.assertIn("INSERT INTO embeddings", SQL_INSERT_EMBEDDING)
         self.assertIn("embedding", SQL_SEARCH_SIMILAR)
+        self.assertIn("CREATE TABLE", SQL_CREATE_JOBS_TABLE)
+        self.assertIn("INSERT INTO jobs", SQL_UPSERT_JOB)
+        self.assertIn("SELECT", SQL_GET_JOB)
+
+    def test_get_chunks_by_ids_uses_batched_query(self):
+        from vector_store.db_store import PostgresVectorStore
+        from chunker.chunker import Chunk
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        mock_cur.fetchall.return_value = [
+            ("c1", "d1", "content 1", ["path"], {"categories": ["a"]}),
+            ("c2", "d2", "content 2", ["path"], {"categories": ["b"]}),
+        ]
+
+        store = PostgresVectorStore.__new__(PostgresVectorStore)
+        store._conn = mock_conn
+        chunks = store.get_chunks_by_ids({"c1", "c2"})
+
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(chunks[0]["id"], "c1")
+        self.assertEqual(chunks[1]["id"], "c2")
+        self.assertEqual(mock_cur.execute.call_count, 1)
+        sql, params = mock_cur.execute.call_args.args
+        self.assertIn("SELECT", sql)
+        self.assertIn("chunks", sql)
 
 
 class VectorIndexTest(unittest.TestCase):

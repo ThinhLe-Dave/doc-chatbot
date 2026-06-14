@@ -6,11 +6,11 @@ import re
 import shutil
 import unicodedata
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from pypdf import PdfReader
 
-from chunker.document import Document
+from chunker.document import Document, compute_content_hash
 from chunker.chunker import Chunker, write_chunks_to_file, get_chunk_file_path
 from datacollector.base import DataCollector
 
@@ -77,6 +77,75 @@ _PAGE_HEADING_RE = re.compile(r"(?m)^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s*(?:Chapte
 _UPPERCASE_SUFFIXES = {"TION", "TIONS", "MENT", "MENTS", "SHIP", "SHIPS", "ENCE", "ENCES", "ANCE", "ANCES"}
 _ALPHA_TOKEN_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")
 _JOIN_SPLIT_WORD_RE = re.compile(r"\b([A-Za-zÀ-ÖØ-öø-ÿ]{1,30})\s+([A-Za-zÀ-ÖØ-öø-ÿ]{1,30})\b")
+_CHUNK_PREVIEW_MAX_PAGES = 50
+
+
+def _parse_page_ranges(page_range: Optional[str], total_pages: int) -> Optional[set]:
+    if not page_range or not str(page_range).strip():
+        return None
+    pages = set()
+    for part in str(page_range).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_str, end_str = part.split("-", 1)
+            try:
+                start = int(start_str.strip())
+            except ValueError:
+                continue
+            try:
+                end = int(end_str.strip())
+            except ValueError:
+                continue
+            start = max(1, min(start, total_pages))
+            end = max(start, min(end, total_pages))
+            pages.update(range(start, end + 1))
+        else:
+            try:
+                page = int(part)
+            except ValueError:
+                continue
+            if 1 <= page <= total_pages:
+                pages.add(page)
+    return pages if pages else None
+
+
+def _page_heading(text: str, page_num: int) -> Optional[dict]:
+    chapter = _extract_chapter_info(text)
+    if not chapter:
+        return None
+    return {"chapter": chapter, "page": page_num}
+
+
+def preflight_chapters(pdf_path: str, max_pages: Optional[int] = _CHUNK_PREVIEW_MAX_PAGES) -> List[dict]:
+    if not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+    try:
+        reader = PdfReader(pdf_path)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to read PDF {pdf_path}: {exc}") from exc
+
+    count = 0
+    chapters: List[dict] = []
+    last_chapter: Optional[str] = None
+    for page_num, page in enumerate(reader.pages, start=1):
+        if max_pages is not None and count >= max_pages:
+            break
+        count += 1
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        if not text.strip():
+            continue
+        chapter = _extract_chapter_info(text)
+        if chapter and chapter != last_chapter:
+            chapters.append({"chapter": chapter, "page": page_num, "pages_span": page_num})
+            last_chapter = chapter
+        elif last_chapter is not None and chapters:
+            chapters[-1]["pages_span"] = page_num
+    return chapters
 
 
 def _alpha_tokens(text: str) -> List[str]:
@@ -197,6 +266,25 @@ def _clean_extracted_text(text: str) -> str:
     return text.strip()
 
 
+def _page_quality(text: str) -> dict:
+    clean = text.strip()
+    words = clean.split()
+    word_count = len(words)
+    char_count = len(clean)
+    tokens = _alpha_tokens(clean)
+    suspicious = sum(1 for t in tokens if _is_suspicious_token(t))
+    suspicious_ratio = suspicious / len(tokens) if tokens else 0.0
+    probably_broken = word_count > 10 and suspicious_ratio > 0.06
+
+    return {
+        "word_count": word_count,
+        "char_count": char_count,
+        "suspicious_token_ratio": round(suspicious_ratio, 4),
+        "probably_broken": probably_broken,
+        "near_empty": word_count == 0,
+    }
+
+
 class PDFScanner(DataCollector):
     def __init__(
         self,
@@ -206,12 +294,14 @@ class PDFScanner(DataCollector):
         use_ocr: Optional[bool] = None,
         ocr_language: str = "eng",
         ocr_dpi: int = 200,
+        ocr_preprocess: bool = False,
     ):
         super().__init__(output_file)
         self.chunker = Chunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         self.use_ocr = use_ocr
         self.ocr_language = ocr_language
         self.ocr_dpi = ocr_dpi
+        self.ocr_preprocess = ocr_preprocess
         self._ocr_unavailable_logged = False
 
     def collect(self, source: str, **kwargs) -> List[Document]:
@@ -220,13 +310,56 @@ class PDFScanner(DataCollector):
     def scan(self, pdf_path: str = None, **kwargs) -> List[Document]:
         """Alias for scan_pdf."""
         source = kwargs.get("source")
-        return self.scan_pdf(pdf_path, source=source)
+        chapters = kwargs.get("chapters")
+        page_range = kwargs.get("page_range")
+        return self.scan_pdf(pdf_path, source=source, chapters=chapters, page_range=page_range)
 
-    def scan_pdf(self, pdf_path: str, source: str = None) -> List[Document]:
+    def _compute_document_hash(self, pdf_path: str) -> str:
+        try:
+            with open(pdf_path, "rb") as f:
+                return compute_content_hash(f.read().decode("latin-1", errors="ignore"))
+        except Exception:
+            return compute_content_hash(pdf_path)
+
+    def scan_pdf(
+        self,
+        pdf_path: str,
+        source: str = None,
+        chapters: Optional[List[str]] = None,
+        page_range: Optional[str] = None,
+    ) -> List[Document]:
         if not os.path.exists(pdf_path):
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
         title = Path(pdf_path).stem
+        document_hash = self._compute_document_hash(pdf_path)
+
+        try:
+            reader = PdfReader(pdf_path)
+        except Exception as e:
+            logger.error(f"Failed to read PDF {pdf_path}: {e}")
+            return []
+
+        PDF_SERVE_DIR.mkdir(parents=True, exist_ok=True)
+        dest_path = PDF_SERVE_DIR / Path(pdf_path).name
+        if not dest_path.exists():
+            try:
+                shutil.copy2(pdf_path, dest_path)
+            except Exception as e:
+                logger.warning(f"Could not copy PDF to serve directory: {e}")
+
+    def scan_pdf(
+        self,
+        pdf_path: str,
+        source: str = None,
+        chapters: Optional[List[str]] = None,
+        page_range: Optional[str] = None,
+    ) -> List[Document]:
+        if not os.path.exists(pdf_path):
+            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+
+        title = Path(pdf_path).stem
+        document_hash = self._compute_document_hash(pdf_path)
 
         try:
             reader = PdfReader(pdf_path)
@@ -243,38 +376,85 @@ class PDFScanner(DataCollector):
                 logger.warning(f"Could not copy PDF to serve directory: {e}")
 
         base_source = source or f"/pdfs/{Path(pdf_path).name}"
+        total_pages = len(reader.pages)
+        allowed_pages: Optional[set] = None
+        skipped = 0
+
+        if chapters:
+            allowed_pages, _, total_pages = compute_chapter_pages(pdf_path, chapters)
+            if allowed_pages is None:
+                logger.info(f"No chapters matched the selection {chapters}; scanning all pages from {pdf_path}")
+
+        if page_range:
+            range_pages = _parse_page_ranges(page_range, total_pages)
+            if range_pages:
+                if allowed_pages is not None:
+                    allowed_pages.intersection_update(range_pages)
+                else:
+                    allowed_pages = range_pages
+            if not allowed_pages:
+                allowed_pages = None
+                logger.info(f"No pages matched the range {page_range}; scanning all pages from {pdf_path}")
+
+        pre_extracted: Optional[dict[int, tuple[str, Optional[str]]]] = None
+        if allowed_pages is not None:
+            pre_extracted = {}
+            for page_num, page in enumerate(reader.pages, start=1):
+                if page_num in allowed_pages:
+                    try:
+                        raw_text = page.extract_text() or ""
+                    except Exception:
+                        raw_text = ""
+                    pre_extracted[page_num] = (raw_text, None)
 
         self.documents = []
         for page_num, page in enumerate(reader.pages, start=1):
             try:
-                text, extraction_method = self._extract_page_text(pdf_path, page_num - 1, page)
+                if allowed_pages is not None and page_num not in allowed_pages:
+                    skipped += 1
+                    continue
+                if pre_extracted and pre_extracted.get(page_num) is not None:
+                    raw_text, _ = pre_extracted[page_num]
+                    text, extraction_method = self._extract_page_text(pdf_path, page_num - 1, page, raw_text=raw_text)
+                else:
+                    text, extraction_method = self._extract_page_text(pdf_path, page_num - 1, page)
                 if text and text.strip():
+                    page_hash = compute_content_hash(text)
                     chapter = _extract_chapter_info(text)
+                    metadata = {
+                        "page": page_num,
+                        "total_pages": total_pages,
+                        "extraction_method": extraction_method,
+                        "book": re.sub(r'\s+', ' ', title.replace(".pdf", "").replace("_", " ").replace("-", " ")).strip(),
+                        "chapter": chapter,
+                        "source_hash": document_hash,
+                        "page_hash": page_hash,
+                    }
+                    if extraction_method == "ocr":
+                        metadata["ocr_confidence"] = self._get_last_ocr_confidence()
+                    metadata.update(_page_quality(text))
                     document = Document.create(
                         source=f"{base_source}#page={page_num}",
                         title=f"{title} (page {page_num})",
                         content=text,
-                        metadata={
-                            "page": page_num,
-                            "total_pages": len(reader.pages),
-                            "extraction_method": extraction_method,
-                            "book": re.sub(r'\s+', ' ', title.replace(".pdf", "").replace("_", " ").replace("-", " ")).strip(),
-                            "chapter": chapter,
-                        },
+                        metadata=metadata,
                     )
                     self.documents.append(document)
             except Exception as e:
                 logger.warning(f"Failed to extract text from page {page_num}: {e}")
 
+        if skipped:
+            logger.info(f"Skipped {skipped} pages for {pdf_path}")
         logger.info(f"Extracted {len(self.documents)} pages from {pdf_path}")
         return self.documents
 
-    def _extract_page_text(self, pdf_path: str, page_index: int, page) -> tuple[str, str]:
-        raw_text = page.extract_text() or ""
+    def _extract_page_text(self, pdf_path: str, page_index: int, page, raw_text: Optional[str] = None) -> tuple[str, str]:
+        if raw_text is None:
+            raw_text = page.extract_text() or ""
         cleaned_text = _clean_extracted_text(raw_text)
 
         if self.use_ocr is True:
-            ocr_text = self._ocr_page(pdf_path, page_index)
+            ocr_text, ocr_confidence = self._ocr_page(pdf_path, page_index)
             if ocr_text and ocr_text.strip():
                 return _clean_extracted_text(ocr_text), "ocr"
             if cleaned_text and cleaned_text.strip():
@@ -284,21 +464,43 @@ class PDFScanner(DataCollector):
         if cleaned_text and cleaned_text.strip() and not _looks_like_broken_pdf_text(raw_text):
             return cleaned_text, "pypdf"
 
-        ocr_text = self._ocr_page(pdf_path, page_index)
+        if len(cleaned_text.strip().split()) >= 8:
+            return cleaned_text, "pypdf-cleaned"
+
+        ocr_text, ocr_confidence = self._ocr_page(pdf_path, page_index)
         if ocr_text and ocr_text.strip():
             return _clean_extracted_text(ocr_text), "ocr"
         if cleaned_text and cleaned_text.strip():
             return cleaned_text, "pypdf-cleaned"
         return "", "empty"
 
-    def _ocr_page(self, pdf_path: str, page_index: int) -> str:
+    def _preprocess_ocr_image(self, image):
+        try:
+            from PIL import Image, ImageOps, ImageFilter
+
+            image = image.convert("L")
+            if self.ocr_preprocess:
+                image = ImageOps.autocontrast(image)
+                image = image.point(lambda p: 255 if p > 200 else 0)
+                image = image.filter(ImageFilter.MedianFilter())
+            return image
+        except Exception:
+            return image
+
+    def _get_last_ocr_confidence(self) -> Optional[float]:
+        return getattr(self, "_last_ocr_confidence", None)
+
+    def _set_last_ocr_confidence(self, value: Optional[float]) -> None:
+        self._last_ocr_confidence = value
+
+    def _ocr_page(self, pdf_path: str, page_index: int) -> tuple[str, float]:
         try:
             import fitz
             import pytesseract
             from PIL import Image
         except Exception as e:
             self._log_ocr_unavailable(e)
-            return ""
+            return "", 0.0
 
         try:
             with fitz.open(pdf_path) as document:
@@ -307,15 +509,29 @@ class PDFScanner(DataCollector):
                 pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
                 image_bytes = pixmap.tobytes("png")
 
-            with Image.open(io.BytesIO(image_bytes)) as image:
-                return pytesseract.image_to_string(
-                    image,
-                    lang=self.ocr_language,
-                    config="--oem 3 --psm 6",
-                )
+            image = Image.open(io.BytesIO(image_bytes))
+            image = self._preprocess_ocr_image(image)
+            data = pytesseract.image_to_data(
+                image,
+                lang=self.ocr_language,
+                config="--oem 3 --psm 6",
+                output_type=pytesseract.Output.DICT,
+            )
+            conf_values = [c for c in data.get("conf", []) if str(c).strip() and str(c) != "-1"]
+            if conf_values:
+                confidence = float(sum(int(c) for c in conf_values)) / len(conf_values) / 100.0
+                confidence = max(0.0, min(1.0, confidence))
+                self._set_last_ocr_confidence(round(confidence, 4))
+            else:
+                confidence = 0.0
+            return pytesseract.image_to_string(
+                image,
+                lang=self.ocr_language,
+                config="--oem 3 --psm 6",
+            ), confidence
         except Exception as e:
             logger.warning(f"OCR failed for page {page_index + 1}: {e}")
-            return ""
+            return "", 0.0
 
     def _log_ocr_unavailable(self, error: Exception) -> None:
         if self._ocr_unavailable_logged:
