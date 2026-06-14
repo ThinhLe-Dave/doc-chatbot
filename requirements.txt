@@ -10,3 +10,4 @@ psycopg[binary,pool]
 pymupdf
 pillow
 pytesseract
+python-multipart

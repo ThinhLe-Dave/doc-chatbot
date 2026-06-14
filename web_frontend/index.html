@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Doc Chatbot</title>
+    <title>Doc Chatbot - Document Search & Processing</title>
     <style>
         * { box-sizing: border-box; }
         body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background: #f8fafc; color: #1e293b; }
@@ -11,16 +11,23 @@
         .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 22px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
         .topbar h1 { font-size: 20px; margin: 0; color: #0f172a; }
+        .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid #e2e8f0; }
+        .tab { padding: 10px 16px; background: #f1f5f9; border: 1px solid #cbd5e1; border-bottom: none; border-radius: 8px 8px 0 0; cursor: pointer; font-size: 14px; font-weight: 500; color: #334155; }
+        .tab.active { background: #fff; border-color: #e2e8f0; border-bottom: 2px solid #fff; color: #0f172a; }
+        .section { display: none; }
+        .section.active { display: block; }
         .row { display: flex; gap: 8px; flex-wrap: wrap; }
         .row > * { flex: 1 1 auto; min-width: 120px; }
         label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #64748b; }
         input, select { background: #fff; color: #1e293b; border: 1px solid #cbd5e1; border-radius: 10px; padding: 10px 12px; font-size: 15px; line-height: 1.35; }
         button { background: #2563eb; color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
-        button:disabled { background: #94a3b8; color: #e2e8f0; cursor: not-allowed; }
+        button:disabled { background: #94a3b8; color: #fefefe; cursor: not-allowed; }
         .search-wrap { margin-top: 14px; display: flex; gap: 8px; }
         .search-wrap input { flex: 1; }
         .status { margin-top: 10px; font-size: 13px; color: #64748b; min-height: 1.4em; }
         .status.error { color: #dc2626; }
+        .progress { margin-top: 8px; height: 20px; background: #e2e8f0; border-radius: 10px; overflow: hidden; border: 1px solid #cbd5e1; }
+        .progress-bar { height: 100%; background: linear-gradient(90deg, #2563eb, #3b82f6); transition: width 0.3s ease; display: flex; align-items: center; justify-content: flex-end; color: #fff; font-size: 11px; font-weight: 600; padding-right: 8px; }
         .results { margin-top: 22px; display: grid; gap: 18px; }
         .result { background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 18px; transition: transform .04s ease; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .result h2 { font-size: 16px; margin: 0 0 4px; color: #0f172a; }
@@ -34,32 +41,112 @@
         .chunk { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; font-size: 14px; line-height: 1.4; color: #475569; }
         .empty { color: #64748b; text-align: center; padding: 40px 8px; font-size: 14px; }
         .pagination { display: none; justify-content: center; align-items: center; gap: 12px; margin-top: 22px; }
+        .job-status { margin-top: 12px; padding: 12px; background: #f8fafc; border-radius: 8px; font-size: 14px; color: #1e293b; }
+        .job-status.error { color: #dc2626; background: #fef2f2; } .job-status.success { background: #dcfce7; border-color: #bbf7d0; color: #166534; }
+        .section-description { font-size: 13px; color: #64748b; margin-bottom: 12px; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="card">
             <div class="topbar"><h1>Doc Chatbot</h1></div>
-            <div class="search-wrap">
-                <input id="query" type="text" placeholder="Ask anything..." autocomplete="off">
-                <button id="searchBtn">Search</button>
-                <button id="cancelBtn" style="display: none; background: #64748b;">Cancel</button>
+            <div class="tabs">
+                <button class="tab active" data-tab="search">Search Documents</button>
+                <button class="tab" data-tab="scrape">Scrape Website Content</button>
+                <button class="tab" data-tab="pdfscan">Scan PDF Files</button>
             </div>
-            <div id="status" class="status"></div>
+            
+            <div id="search-section" class="section active">
+                <p class="section-description">Search through your indexed documents using semantic search.</p>
+                <div class="search-wrap">
+                    <input id="query" type="text" placeholder="Enter search query..." autocomplete="off">
+                    <button id="searchBtn">Search</button>
+                    <button id="cancelBtn" style="display: none; background: #64748b;">Cancel</button>
+                </div>
+                <div id="status" class="status"></div>
+            </div>
+            
+            <div id="scrape-section" class="section">
+                <p class="section-description">Crawl and index content from a website into your document database.</p>
+                <div class="row">
+                    <label>
+                        Website URL to Scrape
+                        <input id="scrapeUrl" type="text" placeholder="https://example.com" />
+                    </label>
+                    <label>
+                        Maximum Pages
+                        <input id="scrapeMaxPages" type="number" value="100" min="1" max="500" />
+                    </label>
+                </div>
+                <div style="margin-top: 12px;">
+                    <button id="scrapeBtn">Start Website Scraping</button>
+                </div>
+                <div id="scrape-status" class="job-status" style="display: none;"></div>
+                <div id="scrape-progress" class="progress" style="display: none;">
+                    <div class="progress-bar" id="scrape-progress-bar" style="width: 0%"></div>
+                </div>
+            </div>
+            
+            <div id="pdfscan-section" class="section">
+                <p class="section-description">Extract text from PDF files and index them into your document database.</p>
+                <div class="row">
+                    <label>
+                        PDF File to Process
+                        <input id="pdfFile" type="file" accept=".pdf,application/pdf" />
+                    </label>
+                </div>
+                <div class="row" style="margin-top: 8px;">
+                    <label>
+                        <input id="pdfUseOcr" type="checkbox" />
+                        Use OCR (for scanned/image-only PDFs)
+                    </label>
+                    <label>
+                        OCR Language
+                        <select id="pdfOcrLanguage">
+                            <option value="eng">English</option>
+                            <option value="vie">Vietnamese</option>
+                        </select>
+                    </label>
+                    <label>
+                        OCR Resolution (DPI)
+                        <input id="pdfOcrDpi" type="number" value="200" min="100" max="400" />
+                    </label>
+                </div>
+                <div style="margin-top: 12px;">
+                    <button id="pdfScanBtn">Start PDF Scanning</button>
+                </div>
+                <div id="pdfscan-status" class="job-status" style="display: none;"></div>
+                <div id="pdfscan-progress" class="progress" style="display: none;">
+                    <div class="progress-bar" id="pdfscan-progress-bar" style="width: 0%"></div>
+                </div>
+            </div>
         </div>
         <div id="results" class="results"></div>
         <div id="pagination" class="pagination"></div>
     </div>
     <script>
         const $ = id => document.getElementById(id);
+        const API_BASE = 'http://127.0.0.1:8000';
         const PAGE_SIZE = 10;
         let currentAbortController = null;
         let allResults = [];
         let currentPage = 1;
+        let currentJobId = null;
+        let pollInterval = null;
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
+            document.querySelectorAll('.section').forEach(s => s.classList.toggle('active', s.id === tabName + '-section'));
+            if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+        }
+
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+        });
 
         async function loadConfig() {
             try {
-                const res = await fetch('http://127.0.0.1:8000/api/config', { signal: AbortSignal.timeout(3000) });
+                await fetch(`${API_BASE}/api/config`, { signal: AbortSignal.timeout(3000) });
             } catch (e) {}
         }
 
@@ -79,10 +166,8 @@
             const signal = currentAbortController.signal;
             
             try {
-                const body = {
-                    query,
-                };
-                const res = await fetch('http://127.0.0.1:8000/api/search', {
+                const body = { query };
+                const res = await fetch(`${API_BASE}/api/search`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(body),
@@ -113,18 +198,157 @@
                 currentAbortController = null;
             }
         }
-        
+
         function cancelSearch() {
             if (currentAbortController) {
                 currentAbortController.abort();
             }
         }
+
+        async function scrapeWebsite() {
+            const url = $('scrapeUrl').value.trim();
+            const maxPages = parseInt($('scrapeMaxPages').value) || 100;
+            if (!url) return;
+
+            const status = $('scrape-status');
+            const progress = $('scrape-progress');
+            const progressBar = $('scrape-progress-bar');
+            const btn = $('scrapeBtn');
+
+            status.style.display = 'block';
+            status.textContent = 'Starting website scrape...';
+            status.className = 'job-status success';
+            progress.style.display = 'block';
+            progressBar.style.width = '0%'; progressBar.textContent = "0%";
+            btn.disabled = true;
+
+            try {
+                const formData = new FormData();
+                formData.append('url', url);
+                formData.append('max_pages', maxPages);
+
+                const res = await fetch(`${API_BASE}/api/scrape`, {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!res.ok) {
+                    const text = await res.text();
+                    status.className = 'job-status error';
+                    status.textContent = 'Error: ' + res.status + ' - ' + text;
+                    btn.disabled = false;
+                    return;
+                }
+
+                const data = await res.json();
+                currentJobId = data.job_id;
+                pollJobStatus('scrape');
+            } catch (e) {
+                status.className = 'job-status error';
+                status.textContent = 'Error: ' + String(e);
+                btn.disabled = false;
+            }
+        }
+
+        async function scanPdf() {
+            const fileInput = $('pdfFile');
+            if (!fileInput.files.length) return;
+
+            const status = $('pdfscan-status');
+            const progress = $('pdfscan-progress');
+            const progressBar = $('pdfscan-progress-bar');
+            const btn = $('pdfScanBtn');
+
+            status.style.display = 'block';
+            status.textContent = 'Starting PDF scan...';
+            status.className = 'job-status success';
+            progress.style.display = 'block';
+            progressBar.style.width = '0%'; progressBar.textContent = "0%";
+            btn.disabled = true;
+
+            try {
+                const formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+                formData.append('use_ocr', $('pdfUseOcr').checked);
+                formData.append('ocr_language', $('pdfOcrLanguage').value);
+                formData.append('ocr_dpi', $('pdfOcrDpi').value);
+
+                const res = await fetch(`${API_BASE}/api/pdf-scan`, {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!res.ok) {
+                    const text = await res.text();
+                    status.className = 'job-status error';
+                    status.textContent = 'Error: ' + res.status + ' - ' + text;
+                    btn.disabled = false;
+                    return;
+                }
+
+                const data = await res.json();
+                currentJobId = data.job_id;
+                pollJobStatus('pdfscan');
+            } catch (e) {
+                status.className = 'job-status error';
+                status.textContent = 'Error: ' + String(e);
+                btn.disabled = false;
+            }
+        }
+
+        async function pollJobStatus(jobType) {
+            if (!currentJobId) return;
+
+            const status = $(jobType + '-status');
+            const progress = $(jobType + '-progress');
+            const progressBar = $(jobType + '-progress-bar');
+            const btn = jobType === 'scrape' ? $('scrapeBtn') : $('pdfScanBtn');
+
+            pollInterval = setInterval(async () => {
+                try {
+                    const res = await fetch(`${API_BASE}/api/jobs/${currentJobId}`);
+                    const data = await res.json();
+
+                    if (data.progress !== undefined) {
+                        progressBar.style.width = data.progress + '%'; progressBar.textContent = data.progress + "%";
+                    }
+
+                    if (data.message) {
+                        status.textContent = data.message;
+                    }
+
+                    if (data.status === 'completed') {
+                        clearInterval(pollInterval);
+                        status.className = 'job-status success';
+                        if (data.result) {
+                            const resultText = jobType === 'scrape' 
+                                ? `Completed! Indexed ${data.result.total_chunks} text chunks from ${data.result.pages_scraped} web pages.`
+                                : `Completed! Indexed ${data.result.total_chunks} text chunks from ${data.result.pages_processed} PDF pages.`;
+                            status.textContent = resultText;
+                        }
+                        btn.disabled = false;
+                    } else if (data.status === 'failed') {
+                        clearInterval(pollInterval);
+                        status.className = 'job-status error';
+                        status.textContent = 'Failed: ' + (data.error || 'Unknown error');
+                        progressBar.style.width = '0%'; progressBar.textContent = "0%";
+                        btn.disabled = false;
+                    }
+                } catch (e) {
+                    clearInterval(pollInterval);
+                    status.className = 'job-status error';
+                    status.textContent = 'Error checking job status: ' + String(e);
+                    btn.disabled = false;
+                }
+            }, 1000);
+        }
+
         function esc(str){
             const div=document.createElement('div'); div.textContent=str; return div.innerHTML;
         }
         function render(results){
             const box=$('results');
-            if (!results.length){ box.innerHTML = '<div class="empty">No results yet</div>'; return; }
+            if (!results.length){ box.innerHTML = '<div class="empty">No results yet. Search using keywords or phrases to find relevant documents.</div>'; return; }
             box.innerHTML = results.map(r => {
                 const metaParts = [];
                 if (r.source) {
@@ -187,6 +411,8 @@
         $('searchBtn').addEventListener('click', search);
         $('cancelBtn').addEventListener('click', cancelSearch);
         $('query').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+        $('scrapeBtn').addEventListener('click', scrapeWebsite);
+        $('pdfScanBtn').addEventListener('click', scanPdf);
         render([]);
     </script>
 </body>
