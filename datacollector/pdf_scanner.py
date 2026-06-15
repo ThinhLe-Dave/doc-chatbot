@@ -21,54 +21,10 @@ logger = logging.getLogger(__name__)
 PDF_SERVE_DIR = Path(__file__).resolve().parent.parent / "pdfs"
 
 _COMMON_SHORT_WORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "but",
-    "by",
-    "can",
-    "do",
-    "for",
-    "from",
-    "go",
-    "had",
-    "has",
-    "he",
-    "her",
-    "him",
-    "his",
-    "if",
-    "in",
-    "is",
-    "it",
-    "me",
-    "my",
-    "no",
-    "not",
-    "of",
-    "on",
-    "or",
-    "our",
-    "she",
-    "so",
-    "than",
-    "that",
-    "the",
-    "then",
-    "this",
-    "to",
-    "up",
-    "us",
-    "was",
-    "we",
-    "were",
-    "will",
-    "with",
-    "you",
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do", "for", "from",
+    "go", "had", "has", "he", "her", "him", "his", "if", "in", "is", "it", "me", "my",
+    "no", "not", "of", "on", "or", "our", "she", "so", "than", "that", "the", "then",
+    "this", "to", "up", "us", "was", "we", "were", "will", "with", "you",
 }
 _SINGLE_LETTER_WORDS = {"a", "I"}
 _ACRONYMS = {"AI", "EEA", "EU", "TFEU", "UK", "US"}
@@ -77,6 +33,7 @@ _PAGE_HEADING_RE = re.compile(r"(?m)^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s*(?:Chapte
 _UPPERCASE_SUFFIXES = {"TION", "TIONS", "MENT", "MENTS", "SHIP", "SHIPS", "ENCE", "ENCES", "ANCE", "ANCES"}
 _ALPHA_TOKEN_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")
 _JOIN_SPLIT_WORD_RE = re.compile(r"\b([A-Za-zÀ-ÖØ-öø-ÿ]{1,30})\s+([A-Za-zÀ-ÖØ-öø-ÿ]{1,30})\b")
+_BROKEN_TOKEN_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _CHUNK_PREVIEW_MAX_PAGES = 50
 
 
@@ -111,13 +68,6 @@ def _parse_page_ranges(page_range: Optional[str], total_pages: int) -> Optional[
     return pages if pages else None
 
 
-def _page_heading(text: str, page_num: int) -> Optional[dict]:
-    chapter = _extract_chapter_info(text)
-    if not chapter:
-        return None
-    return {"chapter": chapter, "page": page_num}
-
-
 def preflight_chapters(pdf_path: str, max_pages: Optional[int] = _CHUNK_PREVIEW_MAX_PAGES) -> List[dict]:
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
@@ -149,12 +99,6 @@ def preflight_chapters(pdf_path: str, max_pages: Optional[int] = _CHUNK_PREVIEW_
 
 
 def compute_chapter_pages(pdf_path: str, chapters: Optional[List[str]] = None) -> tuple[Optional[set], dict[str, set], int]:
-    """Return allowed page set for given chapter labels, or None if all pages.
-    
-    Also returns the raw chapter->pages mapping and total page count.
-    When ``chapters`` is empty/None, returns ``None`` for allowed pages, meaning
-    no filtering should be applied.
-    """
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
     try:
@@ -206,10 +150,26 @@ def _looks_like_broken_pdf_text(text: str) -> bool:
     tokens = _alpha_tokens(text)
     if len(tokens) < 10:
         return False
-
     suspicious_count = sum(1 for token in tokens if _is_suspicious_token(token))
     suspicious_ratio = suspicious_count / len(tokens)
     return suspicious_ratio > 0.06
+
+
+def _is_garbled_text(text: str) -> bool:
+    clean = text.strip()
+    if not clean:
+        return False
+    control_count = len(_BROKEN_TOKEN_RE.findall(clean))
+    control_ratio = control_count / len(clean) if clean else 0.0
+    if control_ratio > 0.02:
+        return True
+    tokens = _alpha_tokens(clean)
+    if len(tokens) < 5:
+        return False
+    long_random = sum(1 for t in tokens if len(t) >= 8 and not any(common in t.lower() for common in _COMMON_SHORT_WORDS))
+    if long_random / len(tokens) > 0.4:
+        return True
+    return False
 
 
 def _should_join_split_words(left: str, right: str) -> bool:
@@ -254,6 +214,17 @@ def _should_join_split_words(left: str, right: str) -> bool:
         return True
     if len(right) <= 3 and len(left) <= 30 and right_lower not in _COMMON_SHORT_WORDS:
         return True
+    if left.islower() and right.islower():
+        combined = left + right
+        if 4 <= len(combined) <= 30:
+            if len(left) >= 2 and len(right) >= 2:
+                return True
+            if len(combined) >= 6:
+                return True
+    if left[:1].islower() and right[:1].islower() and not left.isupper() and not right.isupper():
+        combined = left + right
+        if 5 <= len(combined) <= 28:
+            return True
     return False
 
 
@@ -272,8 +243,29 @@ def _join_split_words(text: str) -> str:
     return text
 
 
+def _fix_split_words(text: str) -> str:
+    text = _join_split_words(text)
+    words = re.findall(r'[A-Za-zÀ-ÖØ-öø-ÿ]+', text)
+    if not words:
+        return text
+    dict_set = set(w.lower() for w in words) | set(words)
+
+    def fix_match(m: re.Match) -> str:
+        word = m.group(0)
+        lw = word.lower()
+        if lw in dict_set:
+            return word
+        for seq in range(len(lw) - 3):
+            head = lw[:seq + 2]
+            tail = lw[seq + 2:]
+            if head in dict_set and tail in dict_set and len(tail) >= 3:
+                return head + ' ' + tail
+        return word
+
+    return re.sub(r'[A-Za-zÀ-ÖØ-öø-ÿ]{6,}', fix_match, text)
+
+
 def _extract_chapter_info(text: str) -> Optional[str]:
-    """Extract chapter/section heading from page text."""
     matches = _CHAPTER_RE.findall(text)
     if matches:
         return matches[0].strip()
@@ -300,27 +292,8 @@ def _clean_extracted_text(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r" {2,}", " ", text)
     text = re.sub(r"\s+([,.;:!?%\)\]])", r"\1", text)
-    text = re.sub(r"([\(\[\{‘“])\s+", r"\1", text)
+    text = re.sub(r"([\(\[\{‘" + r'"' + r"])\s+", r"\1", text)
     return text.strip()
-
-
-def _page_quality(text: str) -> dict:
-    clean = text.strip()
-    words = clean.split()
-    word_count = len(words)
-    char_count = len(clean)
-    tokens = _alpha_tokens(clean)
-    suspicious = sum(1 for t in tokens if _is_suspicious_token(t))
-    suspicious_ratio = suspicious / len(tokens) if tokens else 0.0
-    probably_broken = word_count > 10 and suspicious_ratio > 0.06
-
-    return {
-        "word_count": word_count,
-        "char_count": char_count,
-        "suspicious_token_ratio": round(suspicious_ratio, 4),
-        "probably_broken": probably_broken,
-        "near_empty": word_count == 0,
-    }
 
 
 class PDFScanner(DataCollector):
@@ -329,29 +302,18 @@ class PDFScanner(DataCollector):
         output_file: str = "pdf_data.json",
         chunk_size: int = 500,
         chunk_overlap: int = 50,
-        use_ocr: Optional[bool] = None,
-        ocr_language: str = "eng",
-        ocr_dpi: int = 200,
-        ocr_preprocess: bool = False,
     ):
         super().__init__(output_file)
         self.chunker = Chunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        self.use_ocr = use_ocr
-        self.ocr_language = ocr_language
-        self.ocr_dpi = ocr_dpi
-        self.ocr_preprocess = ocr_preprocess
-        self._ocr_unavailable_logged = False
 
     def collect(self, source: str, **kwargs) -> List[Document]:
         return self.scan(source, **kwargs)
 
     def scan(self, pdf_path: str = None, **kwargs) -> List[Document]:
-        """Alias for scan_pdf."""
         source = kwargs.get("source")
         chapters = kwargs.get("chapters")
-        page_range = kwargs.get("page_range")
         original_filename = kwargs.get("original_filename")
-        return self.scan_pdf(pdf_path, source=source, chapters=chapters, page_range=page_range, original_filename=original_filename)
+        return self.scan_pdf(pdf_path, source=source, chapters=chapters, original_filename=original_filename)
 
     def _compute_document_hash(self, pdf_path: str) -> str:
         try:
@@ -361,8 +323,7 @@ class PDFScanner(DataCollector):
             return compute_content_hash(pdf_path)
 
     def scan_pdf_chapters(self, pdf_path: str, source: str = None, original_filename: Optional[str] = None, chapters: Optional[List[str]] = None) -> List[Document]:
-        """Scan only pages matching specific chapters."""
-        return self.scan_pdf(pdf_path, source=source, original_filename=original_filename, chapters=chapters, page_range=None)
+        return self.scan_pdf(pdf_path, source=source, original_filename=original_filename, chapters=chapters)
 
     def scan_pdf(
         self,
@@ -447,9 +408,6 @@ class PDFScanner(DataCollector):
                         "source_hash": document_hash,
                         "page_hash": page_hash,
                     }
-                    if extraction_method == "ocr":
-                        metadata["ocr_confidence"] = self._get_last_ocr_confidence()
-                    metadata.update(_page_quality(text))
                     document = Document.create(
                         source=f"{base_source}#page={page_num}",
                         title=f"{title} (page {page_num})",
@@ -470,97 +428,15 @@ class PDFScanner(DataCollector):
             raw_text = page.extract_text() or ""
         cleaned_text = _clean_extracted_text(raw_text)
 
-        if self.use_ocr is True:
-            ocr_text, ocr_confidence = self._ocr_page(pdf_path, page_index)
-            if ocr_text and ocr_text.strip():
-                return _clean_extracted_text(ocr_text), "ocr"
-            if cleaned_text and cleaned_text.strip():
-                return cleaned_text, "pypdf"
-            return "", "empty"
-
-        if cleaned_text and cleaned_text.strip() and not _looks_like_broken_pdf_text(raw_text):
+        if cleaned_text and cleaned_text.strip() and not _looks_like_broken_pdf_text(raw_text) and not _is_garbled_text(raw_text):
             return cleaned_text, "pypdf"
 
-        if len(cleaned_text.strip().split()) >= 8:
+        if len(cleaned_text.strip().split()) >= 8 and not _is_garbled_text(cleaned_text):
             return cleaned_text, "pypdf-cleaned"
 
-        ocr_text, ocr_confidence = self._ocr_page(pdf_path, page_index)
-        if ocr_text and ocr_text.strip():
-            return _clean_extracted_text(ocr_text), "ocr"
-        if cleaned_text and cleaned_text.strip():
-            return cleaned_text, "pypdf-cleaned"
         return "", "empty"
 
-    def _preprocess_ocr_image(self, image):
-        try:
-            from PIL import Image, ImageOps, ImageFilter
-
-            image = image.convert("L")
-            if self.ocr_preprocess:
-                image = ImageOps.autocontrast(image)
-                image = image.point(lambda p: 255 if p > 200 else 0)
-                image = image.filter(ImageFilter.MedianFilter())
-            return image
-        except Exception:
-            return image
-
-    def _get_last_ocr_confidence(self) -> Optional[float]:
-        return getattr(self, "_last_ocr_confidence", None)
-
-    def _set_last_ocr_confidence(self, value: Optional[float]) -> None:
-        self._last_ocr_confidence = value
-
-    def _ocr_page(self, pdf_path: str, page_index: int) -> tuple[str, float]:
-        try:
-            import fitz
-            import pytesseract
-            from PIL import Image
-        except Exception as e:
-            self._log_ocr_unavailable(e)
-            return "", 0.0
-
-        try:
-            with fitz.open(pdf_path) as document:
-                page = document.load_page(page_index)
-                scale = self.ocr_dpi / 72
-                pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-                image_bytes = pixmap.tobytes("png")
-
-            image = Image.open(io.BytesIO(image_bytes))
-            image = self._preprocess_ocr_image(image)
-            data = pytesseract.image_to_data(
-                image,
-                lang=self.ocr_language,
-                config="--oem 3 --psm 6",
-                output_type=pytesseract.Output.DICT,
-            )
-            conf_values = [c for c in data.get("conf", []) if str(c).strip() and str(c) != "-1"]
-            if conf_values:
-                confidence = float(sum(int(c) for c in conf_values)) / len(conf_values) / 100.0
-                confidence = max(0.0, min(1.0, confidence))
-                self._set_last_ocr_confidence(round(confidence, 4))
-            else:
-                confidence = 0.0
-            return pytesseract.image_to_string(
-                image,
-                lang=self.ocr_language,
-                config="--oem 3 --psm 6",
-            ), confidence
-        except Exception as e:
-            logger.warning(f"OCR failed for page {page_index + 1}: {e}")
-            return "", 0.0
-
-    def _log_ocr_unavailable(self, error: Exception) -> None:
-        if self._ocr_unavailable_logged:
-            return
-        self._ocr_unavailable_logged = True
-        logger.warning(
-            "OCR fallback is unavailable. Install pytesseract, pillow, pymupdf, and the tesseract binary to scan image-only PDFs. "
-            f"Original error: {error}"
-        )
-
     def export_to_json(self, output_file: str = None) -> str:
-        """Export extracted documents to JSON file."""
         output_file = output_file or self.output_file
         os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
 
@@ -572,7 +448,6 @@ class PDFScanner(DataCollector):
         return output_file
 
     def build_chunks(self, output_file: str = None) -> tuple:
-        """Build chunk cache from extracted documents."""
         if output_file is None:
             output_file = self.output_file
         chunk_file = get_chunk_file_path(output_file)
@@ -586,7 +461,6 @@ class PDFScanner(DataCollector):
 
 
 def scan_and_build_chunks(pdf_path: str, output_file: str = None) -> tuple:
-    """Convenience function to scan PDF and build chunks in one call."""
     scanner = PDFScanner()
     scanner.scan(pdf_path)
     return scanner.build_chunks(output_file=output_file)

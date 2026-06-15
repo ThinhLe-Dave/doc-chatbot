@@ -1,11 +1,24 @@
 {
   "project": "doc-chatbot",
   "description": "Document chatbot for semantic search using embeddings and PostgreSQL",
+  "entry_points": {
+    "cli": {
+      "file": "app.py",
+      "framework": "typer",
+      "commands": ["main", "search", "scrape", "pdf_scan", "clear_db"]
+    },
+    "web": {
+      "file": "web_frontend/fastapi_app.py",
+      "framework": "fastapi",
+      "entry": "web_frontend.fastapi_app:app",
+      "endpoints": ["/health", "/api/search", "/", "/api/config", "/api/document/{document_id}", "/api/categories", "/api/pdf-scan", "/api/scrape", "/api/pdf-scan/preview"]
+    }
+  },
   "modules": {
     "app": {
       "file": "app.py",
-      "purpose": "CLI entry point using typer",
-      "commands": ["main", "search", "scrape", "pdf_scan", "clear_db"],
+      "purpose": "CLI entry point and shared business logic for scrape/pdf-scan",
+      "shared_functions": ["_build_doc_path", "scrape_website", "scan_pdf"],
       "dependencies": ["processor.processor", "chunker.chunker", "embedding.embedding", "vector_store.db_store", "datacollector"]
     },
     "processor": {
@@ -65,10 +78,12 @@
     },
     "web_frontend": {
       "files": {
-        "fastapi_app.py": "FastAPI web API with search endpoint"
+        "fastapi_app.py": "FastAPI web API, proxies scrape/pdf-scan to app.py shared functions",
+        "index.html": "Browser-based search UI",
+        "job_manager.py": "REMOVED - no longer used"
       },
       "purpose": "Web API interface",
-      "endpoints": ["/health", "/api/search", "/", "/api/config", "/api/document/{document_id}", "/api/categories"]
+      "notes": "JobManager and BackgroundTasks removed. Scrape/PDF endpoints now call app.py shared functions synchronously."
     }
   },
   "data_flow": {
@@ -77,9 +92,18 @@
     "search": ["get_embedding_model", "embed_texts", "PostgresVectorStore.search", "_rank_results", "display_results"]
   },
   "database_schema": {
-    "tables": ["documents", "chunks", "embeddings"],
+    "tables": ["documents", "chunks", "embeddings", "jobs"],
+    "jobs_columns": ["id", "job_type", "status", "progress", "message", "error", "result", "created_at", "updated_at", "started_at", "finished_at", "input_payload"],
     "documents_columns": ["id", "source", "title", "path", "metadata"],
     "chunks_columns": ["id", "document_id", "content", "path", "metadata"],
     "embeddings_columns": ["chunk_id", "embedding"]
-  }
+  },
+  "changes_summary": [
+    "Removed web_frontend/job_manager.py - no longer used",
+    "Moved scrape_website() and scan_pdf() business logic into app.py shared functions",
+    "fastapi_app.py now imports scrape_website() and scan_pdf() from app.py instead of duplicating logic",
+    "Removed BackgroundTasks from fastapi_app.py endpoints",
+    "fastapi_app.py endpoints now run synchronously and return results directly",
+    "Removed JobManager singleton and all in-memory job tracking"
+  ]
 }

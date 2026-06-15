@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Doc Chatbot</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; }
+.container { max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 { text-align: center; margin-bottom: 20px; color: #1a73e8; }
+.tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+.tab { padding: 8px 16px; background: #e0e0e0; border: none; border-radius: 20px; cursor: pointer; font-size: 14px; }
+.tab.active { background: #1a73e8; color: white; }
+.panel { display: none; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.panel.active { display: block; }
+form { display: flex; flex-direction: column; gap: 12px; }
+label { font-size: 13px; font-weight: 500; color: #666; }
+input[type="text"], input[type="number"], input[type="url"], input[type="file"] { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; width: 100%; }
+.checkbox-group { display: flex; flex-wrap: wrap; gap: 16px; }
+.checkbox-group label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.separator { display: flex; align-items: center; gap: 12px; margin: 4px 0; color: #888; font-size: 12px; }
+.separator::before, .separator::after { content: ""; flex: 1; height: 1px; background: #e0e0e0; }
+button[type="submit"] { padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500; align-self: flex-start; }
+button[type="submit"]:hover { background: #1557b0; }
+button[type="submit"]:disabled { background: #ccc; cursor: not-allowed; }
+.result { margin-top: 20px; }
+.result-item { padding: 16px; border-bottom: 1px solid #eee; }
+.result-item:last-child { border-bottom: none; }
+.result-title { font-size: 16px; font-weight: 600; color: #1a73e8; margin-bottom: 4px; }
+.result-meta { font-size: 13px; color: #666; margin-bottom: 6px; }
+.result-path { font-size: 13px; color: #444; margin-top: 2px; font-style: italic; }
+.result-cats { font-size: 12px; color: #5f6368; margin-top: 2px; }
+.result-score { font-size: 12px; color: #1a73e8; margin-top: 4px; }
+.result-excerpt { margin-top: 8px; font-size: 14px; line-height: 1.6; color: #333; background: #f8f9fa; padding: 10px; border-radius: 6px; border-left: 3px solid #1a73e8; }
+.error { color: #d93025; background: #fce8e6; padding: 12px; border-radius: 4px; margin-top: 12px; }
+.loading { text-align: center; padding: 20px; color: #666; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Doc Chatbot</h1>
+<div class="tabs">
+<button class="tab active" data-panel="search-panel">Search</button>
+<button class="tab" data-panel="scrape-panel">Scrape Website</button>
+<button class="tab" data-panel="pdf-panel">Scan PDF</button>
+</div>
+<div id="search-panel" class="panel active">
+<form id="search-form">
+<label>Query</label>
+<input type="text" id="search-query" placeholder="Enter your search query..." required>
+<label>Options</label>
+<div class="checkbox-group">
+<label><input type="checkbox" id="search-hybrid" checked> Hybrid scoring</label>
+</div>
+<button type="submit" id="search-btn">Search</button>
+</form>
+<div id="search-pagination"></div>
+<div id="search-results"></div>
+</div>
+<div id="scrape-panel" class="panel">
+<form id="scrape-form">
+<label>URL</label>
+<input type="url" id="scrape-url" placeholder="https://example.com" required>
+<label>Max pages</label>
+<input type="number" id="scrape-limit" value="100" min="1">
+<div class="checkbox-group">
+<label><input type="checkbox" id="scrape-sitemap"> Sitemap first</label>
+<label><input type="checkbox" id="scrape-force"> Force reprocess</label>
+<label><input type="checkbox" id="scrape-robots"> Ignore robots.txt</label>
+</div>
+<button type="submit" id="scrape-btn">Start Scraping</button>
+</form>
+<div id="scrape-result"></div>
+</div>
+<div id="pdf-panel" class="panel">
+<form id="pdf-form">
+<label>Upload PDF</label>
+<input type="file" id="pdf-file" accept="application/pdf">
+<div class="separator">or</div>
+<label>PDF Path on server</label>
+<input type="text" id="pdf-path" placeholder="/path/to/document.pdf">
+<button type="submit" id="pdf-btn">Scan PDF</button>
+</form>
+<div id="pdf-result"></div>
+</div>
+</div>
+<script>
+const tabs = document.querySelectorAll('.tab');
+const panels = document.querySelectorAll('.panel');
+tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        panels.forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.panel).classList.add('active');
+    });
+});
+document.getElementById('search-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    currentSearchPage = 1;
+    doSearch();
+});
+
+async function pollJob(jobId, resultEl, btn, originalLabel) {
+    const interval = setInterval(async () => {
+        try {
+            const res = await fetch('/api/jobs/' + jobId);
+            const data = await res.json();
+            if (data.status === 'running') {
+                resultEl.innerHTML = `<div class="loading">${escapeHtml(data.message || 'Processing...')}</div>`;
+            } else if (data.status === 'failed') {
+                clearInterval(interval);
+                resultEl.innerHTML = `<div class="error">Failed: ${escapeHtml(data.error || data.message)}</div>`;
+                btn.disabled = false;
+                btn.textContent = originalLabel;
+            } else if (data.status === 'completed') {
+                clearInterval(interval);
+                const r = data.result || {};
+                if (r.error) {
+                    resultEl.innerHTML = `<div class="error">${escapeHtml(r.error)}</div>`;
+                } else {
+                    const pages = r.pages_scraped ?? r.pages_processed ?? 0;
+                    const chunks = r.total_chunks ?? 0;
+                    resultEl.innerHTML = `<div class="result-item"><div class="result-meta">Completed</div><div class="result-score">Pages: ${pages}, Chunks: ${chunks}</div></div>`;
+                }
+                btn.disabled = false;
+                btn.textContent = originalLabel;
+            }
+        } catch (err) {
+            clearInterval(interval);
+            resultEl.innerHTML = `<div class="error">Polling failed: ${err.message}</div>`;
+            btn.disabled = false;
+            btn.textContent = originalLabel;
+        }
+    }, 1000);
+}
+
+document.getElementById('scrape-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const result = document.getElementById('scrape-result');
+    const btn = document.getElementById('scrape-btn');
+    btn.disabled = true;
+    btn.textContent = 'Starting...';
+    result.innerHTML = '<div class="loading">Starting job...</div>';
+    try {
+        const res = await fetch('/api/scrape', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                url: document.getElementById('scrape-url').value,
+                limit: parseInt(document.getElementById('scrape-limit').value) || 100,
+                sitemap_first: document.getElementById('scrape-sitemap').checked,
+                force: document.getElementById('scrape-force').checked,
+                no_robots: document.getElementById('scrape-robots').checked,
+            })
+        });
+        const data = await res.json();
+        if (data.error) {
+            result.innerHTML = `<div class="error">${data.error}</div>`;
+            btn.disabled = false;
+            btn.textContent = 'Start Scraping';
+        } else {
+            pollJob(data.job_id, result, btn, 'Start Scraping');
+        }
+    } catch (err) {
+        result.innerHTML = `<div class="error">Request failed: ${err.message}</div>`;
+        btn.disabled = false;
+        btn.textContent = 'Start Scraping';
+    }
+});
+
+document.getElementById('pdf-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const result = document.getElementById('pdf-result');
+    const btn = document.getElementById('pdf-btn');
+    const fileInput = document.getElementById('pdf-file');
+    const pathInput = document.getElementById('pdf-path');
+    const file = fileInput.files[0];
+    const path = pathInput.value.trim();
+
+    if (!file && !path) {
+        result.innerHTML = '<div class="error">Please select a PDF file or enter a server path.</div>';
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Starting...';
+    result.innerHTML = '<div class="loading">Starting job...</div>';
+
+    try {
+        let data;
+        if (file) {
+            const form = new FormData();
+            form.append('file', file);
+            const res = await fetch('/api/pdf-scan-upload', {
+                method: 'POST',
+                body: form,
+            });
+            data = await res.json();
+        } else {
+            const res = await fetch('/api/pdf-scan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    path: path,
+                })
+            });
+            data = await res.json();
+        }
+
+        if (data.error) {
+            result.innerHTML = `<div class="error">${data.error}</div>`;
+            btn.disabled = false;
+            btn.textContent = 'Scan PDF';
+        } else {
+            pollJob(data.job_id, result, btn, 'Scan PDF');
+        }
+    } catch (err) {
+        result.innerHTML = `<div class="error">Request failed: ${err.message}</div>`;
+        btn.disabled = false;
+        btn.textContent = 'Scan PDF';
+    }
+    fileInput.value = '';
+});
+
+function renderPagination(container, page, totalPages, onChange) {
+    if (!container) return;
+    if (totalPages <= 1) { container.innerHTML = ''; return; }
+    const maxVisible = 7;
+    let startPage = Math.max(1, page - Math.floor(maxVisible / 2));
+    let endPage = Math.min(totalPages, startPage + maxVisible - 1);
+    if (endPage - startPage < maxVisible - 1) startPage = Math.max(1, endPage - maxVisible + 1);
+    const pages = [];
+    for (let i = startPage; i <= endPage; i++) pages.push(i);
+    let html = '<div class="pagination" style="display:flex;gap:6px;justify-content:center;margin-top:16px;align-items:center;">';
+    html += `<button class="pagination-btn" data-page="prev" ${page===1 ? 'disabled' : ''}>&laquo; Prev</button>`;
+    if (startPage > 1) {
+        html += `<button class="pagination-btn" data-page="1">1</button>`;
+        if (startPage > 2) html += `<span style="color:#888;">...</span>`;
+    }
+    pages.forEach(p => {
+        html += `<button class="pagination-btn${p===page ? ' active' : ''}" data-page="${p}" style="${p===page ? 'background:#1a73e8;color:white;' : ''}">${p}</button>`;
+    });
+    if (endPage < totalPages) {
+        if (endPage < totalPages - 1) html += `<span style="color:#888;">...</span>`;
+        html += `<button class="pagination-btn" data-page="${totalPages}">${totalPages}</button>`;
+    }
+    html += `<button class="pagination-btn" data-page="next" ${page===totalPages ? 'disabled' : ''}>Next &raquo;</button>`;
+    html += `<span style="color:#666;font-size:13px;margin-left:8px;">page ${page} / ${totalPages}</span>`;
+    html += '</div>';
+    html += '<style>.pagination-btn{padding:4px 10px;border:1px solid #ddd;background:white;border-radius:4px;cursor:pointer;font-size:13px;}.pagination-btn:hover:not(:disabled){background:#f5f5f5;}.pagination-btn:disabled{opacity:0.5;cursor:not-allowed;}</style>';
+    container.innerHTML = html;
+    container.querySelectorAll('.pagination-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (btn.disabled) return;
+            let p = btn.getAttribute('data-page');
+            if (p === 'prev') p = page - 1;
+            else if (p === 'next') p = page + 1;
+            else p = parseInt(p);
+            if (p >= 1 && p <= totalPages && onChange) onChange(p);
+        });
+    });
+}
+let currentSearchPage = 1;
+async function doSearch() {
+    const results = document.getElementById('search-results');
+    const btn = document.getElementById('search-btn');
+    const paginationEl = document.getElementById('search-pagination');
+    btn.disabled = true;
+    btn.textContent = 'Searching...';
+    results.innerHTML = '<div class="loading">Searching...</div>';
+    try {
+        const res = await fetch('/api/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: document.getElementById('search-query').value,
+                page: currentSearchPage,
+                page_size: 10,
+                hybrid: document.getElementById('search-hybrid').checked,
+                chunk_k: 3,
+                min_score: 0.01,
+                hybrid_weight: 0.1,
+            })
+        });
+        const data = await res.json();
+        if (data.error) {
+            results.innerHTML = `<div class="error">${data.error}</div>`;
+            paginationEl.innerHTML = '';
+        } else {
+            currentSearchPage = data.page || 1;
+            const totalPages = data.total_pages || 1;
+            const total = data.total || 0;
+            const resultsHtml = data.results.map((r, i) => {
+                const source = String(r.source || '#');
+                const rawTitle = String(r.title || 'Untitled').replace(/<[^>]*>/g, '').trim();
+                const title = rawTitle || 'Untitled';
+                const loc = r.location && Object.keys(r.location).length ? r.location : null;
+                const pathParts = (r.path || []).filter(p => {
+                    const s = String(p).trim();
+                    if (!s || s.length < 2) return false;
+                    if (/[\x00-\x1f]/.test(s)) return false;
+                    return true;
+                });
+                const pathSeen = new Set();
+                const uniquePath = pathParts.filter(p => {
+                    const key = p.toLowerCase();
+                    if (pathSeen.has(key)) return false;
+                    pathSeen.add(key);
+                    return true;
+                });
+                const readablePath = loc
+                    ? [loc.book, loc.chapter, loc.verse, loc.section].filter(Boolean).join(' > ')
+                    : (uniquePath.length ? uniquePath.join(' > ') : '');
+                let excerpt = String(r.best_chunk || '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ' ').replace(/\s+/g, ' ').trim();
+                excerpt = excerpt.replace(/[^\x20-\x7e\xa0-\xff]/g, ' ').replace(/\s+/g, ' ').trim();
+                if (excerpt.length > 200) excerpt = excerpt.slice(0, 197) + '...';
+                if (!excerpt || excerpt.length < 5) excerpt = null;
+                const sourceHref = source.startsWith('http') ? source : ('/pdfs/' + source);
+                return `
+                <div class="result-item">
+                    <div class="result-title"><a href="${escapeHtml(sourceHref)}" target="_blank" rel="noopener">${i + 1}. ${escapeHtml(title)}</a></div>
+                    ${readablePath ? `<div class="result-path">${escapeHtml(readablePath)}</div>` : ''}
+                    <div class="result-meta">Score: ${r.score.toFixed(4)}</div>
+                    ${excerpt ? `<div class="result-excerpt">${escapeHtml(excerpt)}</div>` : ''}
+                </div>`;
+            }).join('');
+            results.innerHTML = resultsHtml || '<div class="result-item">No results found</div>';
+            renderPagination(paginationEl, currentSearchPage, totalPages, (p) => { currentSearchPage = p; doSearch(); });
+        }
+    } catch (err) {
+        results.innerHTML = `<div class="error">Request failed: ${err.message}</div>`;
+    }
+    btn.disabled = false;
+    btn.textContent = 'Search';
+}
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+</script>
+</body>
+</html>

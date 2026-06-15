@@ -11,7 +11,7 @@ A lightweight document search and chatbot-style retrieval system. This repositor
 
 ## Repository Structure
 
-- `app.py` — main CLI entry point with commands for search, scraping, and PDF scanning
+- `app.py` — main CLI entry point with commands for search, scraping, and PDF scanning. Also exports shared service functions (`scrape_website`, `scan_pdf`) used by the web API.
 - `web_frontend/` — FastAPI backend + browser UI
 - `chunker/` — document and chunk utilities
 - `embedding/` — embedding model loading, encoding, and persistence helpers
@@ -20,6 +20,10 @@ A lightweight document search and chatbot-style retrieval system. This repositor
 - `vector_store/` — Vector store implementations (file-based and PostgreSQL)
 - `database/` — example scraped data and cache files
 - `requirements.txt` — required Python dependencies
+
+## Architecture
+
+The CLI (`app.py`) and web API (`web_frontend/fastapi_app.py`) share the same business logic. `app.py` exports `scrape_website()` and `scan_pdf()` functions, which the FastAPI endpoints call directly. This eliminates code duplication and removes the need for a separate job manager.
 
 ## PostgreSQL Setup
 

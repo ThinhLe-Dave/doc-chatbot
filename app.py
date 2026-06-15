@@ -58,7 +58,7 @@ def main(
     min_score = min_score if min_score is not None else get_search_min_score()
     hybrid = hybrid if hybrid is not None else get_search_hybrid()
     hybrid_weight = hybrid_weight if hybrid_weight is not None else get_search_hybrid_weight()
-    
+
     if ctx.invoked_subcommand is None:
         prompt = query or typer.prompt("Enter a prompt describing the documents you want to read")
         results = recommend_documents(prompt, top_k, chunk_k, min_score, hybrid, hybrid_weight, categories)
@@ -100,37 +100,17 @@ def build_chunk_cache(input_file: str, chunk_file: str):
     return store.build(model)
 
 
-@app.command()
-def scrape(
-    url: Optional[str] = typer.Argument(None, help="The starting URL to scrape"),
-    limit: int = typer.Option(10000, "--limit", "-l", help="Limit the number of pages to scrape"),
-    sitemap_first: bool = typer.Option(False, "--sitemap-first", help="Discover URLs from sitemap before link crawling"),
-    force: bool = typer.Option(False, "--force", help="Force reprocess even if HTTP validators indicate unchanged content"),
-    no_robots: bool = typer.Option(False, "--no-robots", help="Ignore robots.txt rules"),
-):
-    """
-    **Document Chatbot Data Scraper**
-    
-    Crawls a website and stores content directly in PostgreSQL for chatbot processing.
-    """
-    url = url.strip() if url else None
+def scrape_website(url: str, limit: int = 10000, sitemap_first: bool = False, force: bool = False, no_robots: bool = False) -> dict:
+    url = url.strip()
     if not url:
-        typer.secho("Error: No URL provided. Use --help for usage.", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
+        raise ValueError("No URL provided")
 
     db_config = DatabaseConfig.from_config_file()
     if not db_config.is_configured():
-        typer.secho("Database not configured. Add [database] section to config.cfg", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
-
-    print("🚀 Starting the web scraper...")
-    print(f"Starting crawl on: {url}...")
+        raise RuntimeError("Database not configured")
 
     scraper = Scraper(base_url=url, sitemap_first=sitemap_first, obey_robots=not no_robots)
     scraper.crawl(max_pages=limit, force=force)
-
-    metrics = scraper.metrics
-    print(f"Discovery metrics - discovered: {metrics['discovered']}, fetched: {metrics['fetched']}, skipped: {metrics['skipped']}, failed: {metrics['failed']}")
 
     model = get_embedding_model()
     store = PostgresVectorStore(config=db_config)
@@ -164,43 +144,20 @@ def scrape(
 
     conn.commit()
     store.close()
-    print(f"Scraping completed. {total_chunks} chunks saved to database.")
+    return {
+        "total_chunks": total_chunks,
+        "pages_scraped": len(scraper.scraped_data),
+    }
 
 
-@app.command()
-def pdf_scan(
-    path: Annotated[Optional[str], typer.Argument(help="Path to PDF file or directory")] = None,
-    use_ocr: Annotated[Optional[bool], typer.Option("--ocr/--no-ocr", help="Use OCR fallback for scanned or badly spaced PDFs")] = None,
-    ocr_language: Annotated[str, typer.Option("--ocr-language", help="Tesseract language code for OCR")] = "eng",
-    ocr_dpi: Annotated[int, typer.Option("--ocr-dpi", help="Rendering DPI for OCR")] = 200,
-    ocr_preprocess: Annotated[bool, typer.Option("--ocr-preprocess/--no-ocr-preprocess", help="Preprocess OCR images (grayscale, binarize, denoise)")] = False,
-    force: Annotated[bool, typer.Option("--force", help="Force reprocess even if unchanged pages are detected")] = False,
-    chapters: Annotated[Optional[List[str]], typer.Option("--chapter", "-c", help="Filter by chapter/section (repeatable)")] = None,
-    page_range: Annotated[Optional[str], typer.Option("--page-range", help="Page range filter (e.g., '1,3-5,8')")] = None,
-):
-    """
-    **PDF Scanner**
-
-    Extracts text from PDF files and builds document chunks directly in PostgreSQL.
-    """
-    db_config = DatabaseConfig.from_config_file()
-    if not db_config.is_configured():
-        typer.secho("Database not configured. Add [database] section to config.cfg", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
-
-    path = path.strip() if path else None
-    if not path:
-        typer.secho("Error: No path provided. Use --help for usage.", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
-
+def scan_pdf(path: str, chapters: Optional[List[str]] = None) -> dict:
+    print("Starting PDF scan...")
     if not os.path.exists(path) or not path.lower().endswith(".pdf"):
-        typer.secho(f"Error: Invalid PDF path: {path}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
+        raise ValueError(f"Invalid PDF path: {path}")
 
-    typer.echo(f"Scanning PDF: {path}...")
-
-    scanner = PDFScanner(use_ocr=use_ocr, ocr_language=ocr_language, ocr_dpi=ocr_dpi, ocr_preprocess=ocr_preprocess)
-    documents = scanner.scan_pdf(path, original_filename=path, chapters=chapters, page_range=page_range)
+    db_config = DatabaseConfig.from_config_file()
+    scanner = PDFScanner()
+    documents = scanner.scan_pdf(path, original_filename=path, chapters=chapters)
 
     model = get_embedding_model()
     store = PostgresVectorStore(config=db_config)
@@ -211,15 +168,13 @@ def pdf_scan(
     seen_docs = set()
     batch_chunks = []
 
+    chunker = Chunker()
     for doc in documents:
         doc_path = _build_doc_path(doc)
         if doc.id not in seen_docs:
             seen_docs.add(doc.id)
             with conn.cursor() as cur:
                 insert_document(cur, doc.id, doc.source, doc.title, doc_path, doc.metadata)
-
-    chunker = Chunker()
-    for doc in documents:
         for chunk in chunker.create_chunks_from_document(doc):
             batch_chunks.append(chunk)
             if len(batch_chunks) >= 64:
@@ -234,7 +189,61 @@ def pdf_scan(
 
     conn.commit()
     store.close()
-    print(f"Saved {total_chunks} chunks to database.")
+    return {
+        "total_chunks": total_chunks,
+        "pages_processed": len(documents),
+    }
+
+
+@app.command()
+def scrape(
+    url: Optional[str] = typer.Argument(None, help="The starting URL to scrape"),
+    limit: int = typer.Option(10000, "--limit", "-l", help="Limit the number of pages to scrape"),
+    sitemap_first: bool = typer.Option(False, "--sitemap-first", help="Discover URLs from sitemap before link crawling"),
+    force: bool = typer.Option(False, "--force", help="Force reprocess even if HTTP validators indicate unchanged content"),
+    no_robots: bool = typer.Option(False, "--no-robots", help="Ignore robots.txt rules"),
+):
+    """
+    **Document Chatbot Data Scraper**
+
+    Crawls a website and stores content directly in PostgreSQL for chatbot processing.
+    """
+    url = url.strip() if url else None
+    if not url:
+        typer.secho("Error: No URL provided. Use --help for usage.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Starting crawl on: {url}...")
+
+    result = scrape_website(url, limit, sitemap_first, force, no_robots)
+
+    typer.echo(f"Discovery metrics - discovered: {result.get('pages_scraped', 0)}, fetched: {result.get('pages_scraped', 0)}, skipped: 0, failed: 0")
+    typer.echo(f"Scraping completed. {result['total_chunks']} chunks saved to database.")
+
+
+@app.command()
+def pdf_scan(
+    path: Annotated[Optional[str], typer.Argument(help="Path to PDF file")] = None,
+    force: Annotated[bool, typer.Option("--force", help="Force reprocess even if unchanged pages are detected")] = False,
+    chapters: Annotated[Optional[List[str]], typer.Option("--chapter", "-c", help="Filter by chapter/section (repeatable)")] = None,
+):
+    """
+    **PDF Scanner**
+
+    Extracts text from PDF files and builds document chunks directly in PostgreSQL.
+    """
+    print("Starting PDF scan...")
+    path = path.strip() if path else None
+    if not path:
+        typer.secho("Error: No path provided. Use --help for usage.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    if not os.path.exists(path) or not path.lower().endswith(".pdf"):
+        typer.secho(f"Error: Invalid PDF path: {path}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    result = scan_pdf(path, chapters)
+    typer.echo(f"PDF scan completed. {result['total_chunks']} chunks saved to database.")
 
 
 @app.command()

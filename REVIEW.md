@@ -7,7 +7,7 @@ Last reviewed: 2026-06-14
 - Core RAG pipeline is functional and centered on PostgreSQL/pgvector for production search.
 - CLI and FastAPI share the same `recommend_documents()` search path.
 - Frontend/backend separation is clean: FastAPI serves API endpoints plus static HTML, while the frontend uses same-origin API paths.
-- FastAPI supports background scrape and PDF scan jobs through `web_frontend/job_manager.py`.
+- FastAPI scrape and PDF scan endpoints now call shared functions from `app.py` directly (no background jobs).
 - PDF uploads are written to generated temporary `.pdf` paths instead of client-supplied filenames.
 - CORS is disabled by default and can be enabled with an explicit origin allowlist.
 - Debug logging remains centralized and category-based via `config/config.cfg` `[logging] categories.
@@ -93,7 +93,7 @@ None currently tracked.
 - Crawled and ingested URLs are canonicalized, and the frontend deduplicates search results by canonical URL key.
 - `HF_TOKEN` is injected into `os.environ` from `[hf] token`.
 - `scrape` CLI now raises `typer.Exit(1)` instead of `typer.Abort`.
-- `app.py` remains reduced from 366→102 lines; processing logic lives in `processor/processor.py`.
+- `app.py` remains reduced; processing logic lives in `processor/processor.py` and shared service functions in `app.py`.
 - `embedding/embedding.py` and `chunker/document.py` raise proper exceptions instead of Typer aborts.
 - `processor/processor.py` contains the extracted search/ranking logic.
 - `hybrid_weight` clamping is implemented.
@@ -109,3 +109,4 @@ None currently tracked.
 - Frontend displays `location` and `path` from API responses.
 - `.kilo/` is added to `.gitignore`.
 - Multiprocessing semaphore leak warning is suppressed via `utils/logging.py`.
+- **`web_frontend/job_manager.py` removed**: `fastapi_app.py` now imports `scrape_website()` and `scan_pdf()` directly from `app.py`, eliminating the in-memory `JobManager` singleton and `BackgroundTasks` usage. Scrape/PDF endpoints run synchronously and return results immediately.
