@@ -172,12 +172,40 @@ def store_chunk_with_embedding(conn, chunk: "Chunk", embedding) -> None:
 
 def store_chunk_batch(conn, chunks: list, model) -> None:
     """Store a batch of chunks and embeddings."""
+    import sys
     from embedding.embedding import embed_texts
+
+    if not chunks:
+        return
+    print(f"[debug] store_chunk_batch: starting with {len(chunks)} chunks", flush=True)
     embeddings = embed_texts(model, [c.content for c in chunks])
+    print(f"[debug] store_chunk_batch: got embeddings shape={embeddings.shape}", flush=True)
+    
+    print(f"[debug] store_chunk_batch: starting DB insert", flush=True)
     with conn.cursor() as cur:
-        for chunk, embedding in zip(chunks, embeddings):
-            cur.execute(SQL_INSERT_CHUNK, (chunk.id, chunk.document_id, chunk.content, json.dumps(chunk.path), json.dumps(chunk.metadata)))
-            cur.execute(SQL_INSERT_EMBEDDING, (chunk.id, embedding.tolist()))
+        print(f"[debug] store_chunk_batch: executing SQL_INSERT_CHUNK for {len(chunks)} rows", flush=True)
+        cur.executemany(
+            SQL_INSERT_CHUNK,
+            [
+                (
+                    chunk.id,
+                    chunk.document_id,
+                    chunk.content,
+                    json.dumps(chunk.path),
+                    json.dumps(chunk.metadata),
+                )
+                for chunk in chunks
+            ],
+        )
+        print(f"[debug] store_chunk_batch: SQL_INSERT_CHUNK done, executing SQL_INSERT_EMBEDDING", flush=True)
+        cur.executemany(
+            SQL_INSERT_EMBEDDING,
+            [
+                (chunk.id, embedding.tolist())
+                for chunk, embedding in zip(chunks, embeddings)
+            ],
+        )
+        print(f"[debug] store_chunk_batch: SQL_INSERT_EMBEDDING done", flush=True)
 
 
 def compute_content_hash(content: str) -> str:

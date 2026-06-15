@@ -1,4 +1,5 @@
 import json
+import sys
 import time
 import uuid
 from contextlib import suppress
@@ -201,6 +202,7 @@ def _build_doc_path(doc: Document) -> List[str]:
 def _persist_job(job_id: str, status: Optional[str], progress: Optional[int] = None, message: Optional[str] = None, error: Optional[str] = None, result: Optional[dict] = None, started_at: Optional[str] = None, finished_at: Optional[str] = None) -> None:
     db_config = DatabaseConfig.from_config_file()
     if not db_config.is_configured():
+        print(f"[debug] _persist_job: db not configured, skipping persist")
         return
 
     store = PostgresVectorStore(config=db_config)
@@ -225,7 +227,10 @@ def _persist_job(job_id: str, status: Optional[str], progress: Optional[int] = N
                 ),
             )
         store._conn.commit()
-    except Exception:
+        print(f"[debug] _persist_job: persisted job {job_id} status={status} progress={progress}")
+    except Exception as e:
+        print(f"[error] _persist_job failed: {e}")
+    finally:
         with suppress(Exception):
             store.close()
 
@@ -249,7 +254,7 @@ def _load_job_from_db(job_id: str) -> Optional[dict]:
                 "progress": row[3],
                 "message": row[4],
                 "error": row[5],
-                "result": row[6],
+                "result": json.loads(row[6]) if row[6] else None,
                 "created_at": row[7].isoformat() if row[7] else None,
                 "updated_at": row[8].isoformat() if row[8] else None,
                 "started_at": row[9].isoformat() if row[9] else None,
@@ -267,7 +272,12 @@ def _store_documents(job_manager, job_id: str, documents: List[Document]) -> int
     if not db_config.is_configured():
         raise RuntimeError("Database not configured")
 
+    job_manager.update_job(job_id, status="running", progress=50, message="Loading embedding model...")
+    _persist_job(job_id, status="running", progress=50, message="Loading embedding model...")
+    t0 = time.time()
     model = get_embedding_model()
+    print(f"[debug] model loaded in {time.time() - t0:.2f}s", flush=True)
+
     store = PostgresVectorStore(config=db_config)
     store.load()
     conn = store._conn
@@ -276,28 +286,50 @@ def _store_documents(job_manager, job_id: str, documents: List[Document]) -> int
     batch_chunks = []
     chunker = Chunker()
     total_chunks = 0
+    total_docs = len(documents)
 
-    for doc in documents:
+    print(f"[debug] _store_documents: processing {total_docs} documents", flush=True)
+    for doc_count, doc in enumerate(documents, 1):
         doc_path = _build_doc_path(doc)
         if doc.id not in seen_docs:
             seen_docs.add(doc.id)
             with conn.cursor() as cur:
                 insert_document(cur, doc.id, doc.source, doc.title, doc_path, doc.metadata)
 
-        for chunk in chunker.create_chunks_from_document(doc):
-            batch_chunks.append(chunk)
-            if len(batch_chunks) >= 64:
-                store_chunk_batch(conn, batch_chunks, model)
-                total_chunks += len(batch_chunks)
-                conn.commit()
-                batch_chunks = []
+        doc_chunks = list(chunker.create_chunks_from_document(doc))
+        chunks_for_doc = len(doc_chunks)
+        print(f"[debug] doc [{doc_count}/{total_docs}] {doc.id} chunks={chunks_for_doc}", flush=True)
+        batch_chunks.extend(doc_chunks)
+        
+        # Update progress based on document progress (not chunk count)
+        doc_progress = min(50, int((doc_count / max(total_docs, 1)) * 25))
+        if doc_progress > 0 and doc_count % 20 == 0:  # Update every 20 docs
+            job_manager.update_job(job_id, progress=50 + doc_progress, message=f"Processed {doc_count}/{total_docs} pages...")
+            _persist_job(job_id, status="running", progress=50 + doc_progress, message=f"Processed {doc_count}/{total_docs} pages...")
 
+        if len(batch_chunks) >= 64:
+            t1 = time.time()
+            store_chunk_batch(conn, batch_chunks, model)
+            print(f"[debug] stored batch {len(batch_chunks)} chunks in {time.time() - t1:.2f}s", flush=True)
+            total_chunks += len(batch_chunks)
+            conn.commit()
+            batch_chunks = []
+
+    print(f"[debug] _store_documents: loop finished, processed {doc_count} docs, remaining batch_chunks={len(batch_chunks)}", flush=True)
     if batch_chunks:
-        store_chunk_batch(conn, batch_chunks, model)
+        print(f"[debug] processing final batch of {len(batch_chunks)} chunks", flush=True)
+        t1 = time.time()
+        try:
+            store_chunk_batch(conn, batch_chunks, model)
+            print(f"[debug] stored final batch {len(batch_chunks)} chunks in {time.time() - t1:.2f}s", flush=True)
+        except Exception as e:
+            print(f"[error] failed to store final batch: {e}", flush=True)
+            raise
         total_chunks += len(batch_chunks)
 
     conn.commit()
     store.close()
+    print(f"[debug] total_chunks={total_chunks}", flush=True)
     return total_chunks
 
 
@@ -333,7 +365,8 @@ def _run_scrape(job_id: str, url: str, max_pages: int):
         _persist_job(job_id, status="failed", error=str(e), finished_at=finished_at)
 
 
-def _run_pdf_scan_from_bytes(job_id: str, file_content: bytes, use_ocr: bool, ocr_language: str, ocr_dpi: int):
+def _run_pdf_scan_from_bytes(job_id: str, file_content: bytes, use_ocr: bool, ocr_language: str, ocr_dpi: int, original_filename: str, chapters: Optional[List[str]] = None, page_range: Optional[str] = None):
+    print(f"[debug] _run_pdf_scan_from_bytes: starting job {job_id}")
     temp_path = PDF_DIR / f"{uuid.uuid4().hex}.pdf"
     started_at = datetime.now(timezone.utc).isoformat()
     job_manager = JobManager()
@@ -349,11 +382,10 @@ def _run_pdf_scan_from_bytes(job_id: str, file_content: bytes, use_ocr: bool, oc
             f.write(file_content)
 
         scanner = PDFScanner(use_ocr=use_ocr, ocr_language=ocr_language, ocr_dpi=ocr_dpi)
-        documents = scanner.scan_pdf(str(temp_path))
-
-        progress_message = f"Scanned {len(documents)} pages, building chunks..."
-        job_manager.update_job(job_id, status="running", progress=50, message=progress_message)
-        _persist_job(job_id, status="running", progress=50, message=progress_message)
+        if chapters and not page_range:
+            documents = scanner.scan_pdf_chapters(str(temp_path), source=f"/pdfs/{original_filename}", original_filename=original_filename, chapters=chapters)
+        else:
+            documents = scanner.scan_pdf(str(temp_path), source=f"/pdfs/{original_filename}", original_filename=original_filename, chapters=chapters, page_range=page_range)
 
         total_chunks = _store_documents(job_manager, job_id, documents)
 
@@ -369,6 +401,63 @@ def _run_pdf_scan_from_bytes(job_id: str, file_content: bytes, use_ocr: bool, oc
     finally:
         with suppress(OSError):
             temp_path.unlink()
+
+
+@app.post("/api/pdf-scan/preview", response_class=JSONResponse)
+async def pdf_scan_preview(
+    file: UploadFile = File(...),
+):
+    """Return candidate chapters for a PDF without OCR."""
+    if file.content_type not in ("application/pdf", "application/octet-stream"):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only PDF files are allowed.")
+
+    file_content = await file.read()
+    if len(file_content) > MAX_PDF_SIZE:
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 100MB.")
+
+    temp_path = PDF_DIR / f"{uuid.uuid4().hex}.pdf"
+    try:
+        with open(temp_path, "wb") as f:
+            f.write(file_content)
+        chapters = preflight_chapters(str(temp_path), max_pages=50)
+        return {"chapters": chapters}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    finally:
+        with suppress(OSError):
+            temp_path.unlink()
+
+
+@app.post("/api/pdf-scan", response_class=JSONResponse)
+async def pdf_scan(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    use_ocr: bool = Form(False),
+    ocr_language: str = Form("eng"),
+    ocr_dpi: int = Form(200),
+    chapters: Optional[str] = Form(None),
+    page_range: Optional[str] = Form(None),
+):
+    """Start a background PDF scan job."""
+    _check_database_configured()
+
+    if file.content_type not in ("application/pdf", "application/octet-stream"):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only PDF files are allowed.")
+
+    job_manager = JobManager()
+    job_id = job_manager.create_job()
+    _persist_job(job_id, status="pending", progress=0, message="Queued")
+
+    file_content = await file.read()
+    if len(file_content) > MAX_PDF_SIZE:
+        job_manager.update_job(job_id, status="failed", error="File too large. Maximum size is 100MB.")
+        _persist_job(job_id, status="failed", error="File too large. Maximum size is 100MB.")
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 100MB.")
+
+    chapter_list = [c.strip() for c in chapters.split(",") if c.strip()] if chapters else None
+    background_tasks.add_task(_run_pdf_scan_from_bytes, job_id, file_content, use_ocr, ocr_language, ocr_dpi, file.filename, chapter_list, page_range)
+
+    return {"status": "started", "job_id": job_id}
 
 
 @app.post("/api/scrape", response_class=JSONResponse)
@@ -394,44 +483,18 @@ def scrape(
     return {"status": "started", "job_id": job_id}
 
 
-@app.post("/api/pdf-scan", response_class=JSONResponse)
-async def pdf_scan(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    use_ocr: bool = Form(False),
-    ocr_language: str = Form("eng"),
-    ocr_dpi: int = Form(200),
-):
-    """Start a background PDF scan job."""
-    _check_database_configured()
-
-    if file.content_type not in ("application/pdf", "application/octet-stream"):
-        raise HTTPException(status_code=400, detail="Invalid file type. Only PDF files are allowed.")
-
-    job_manager = JobManager()
-    job_id = job_manager.create_job()
-    _persist_job(job_id, status="pending", progress=0, message="Queued")
-
-    file_content = await file.read()
-    if len(file_content) > MAX_PDF_SIZE:
-        job_manager.update_job(job_id, status="failed", error="File too large. Maximum size is 100MB.")
-        _persist_job(job_id, status="failed", error="File too large. Maximum size is 100MB.")
-        raise HTTPException(status_code=413, detail="File too large. Maximum size is 100MB.")
-
-    background_tasks.add_task(_run_pdf_scan_from_bytes, job_id, file_content, use_ocr, ocr_language, ocr_dpi)
-
-    return {"status": "started", "job_id": job_id}
-
-
 @app.get("/api/jobs/{job_id}", response_class=JSONResponse)
 def get_job_status(job_id: str):
     """Get the status of a background job."""
     db_record = _load_job_from_db(job_id)
     if db_record:
+        print(f"[api] job {job_id} status={db_record.get('status')} progress={db_record.get('progress')}")
         return db_record
 
     job_manager = JobManager()
     job = job_manager.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job_manager.to_dict(job)
+    result = job_manager.to_dict(job)
+    print(f"[api] job {job_id} (mem) status={result.get('status')} progress={result.get('progress')}")
+    return result

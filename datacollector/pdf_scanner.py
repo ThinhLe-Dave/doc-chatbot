@@ -148,6 +148,44 @@ def preflight_chapters(pdf_path: str, max_pages: Optional[int] = _CHUNK_PREVIEW_
     return chapters
 
 
+def compute_chapter_pages(pdf_path: str, chapters: Optional[List[str]] = None) -> tuple[Optional[set], dict[str, set], int]:
+    """Return allowed page set for given chapter labels, or None if all pages.
+    
+    Also returns the raw chapter->pages mapping and total page count.
+    When ``chapters`` is empty/None, returns ``None`` for allowed pages, meaning
+    no filtering should be applied.
+    """
+    if not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+    try:
+        reader = PdfReader(pdf_path)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to read PDF {pdf_path}: {exc}") from exc
+
+    total_pages = len(reader.pages)
+    if not chapters:
+        return None, {}, total_pages
+
+    chapter_pages: dict[str, set] = {}
+    for page_num, page in enumerate(reader.pages, start=1):
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        chapter = _extract_chapter_info(text)
+        if chapter:
+            chapter_pages.setdefault(chapter, set()).add(page_num)
+
+    allowed_pages: set = set()
+    for label in chapters:
+        allowed_pages.update(chapter_pages.get(label, set()))
+
+    if not allowed_pages:
+        return None, chapter_pages, total_pages
+
+    return allowed_pages, chapter_pages, total_pages
+
+
 def _alpha_tokens(text: str) -> List[str]:
     return _ALPHA_TOKEN_RE.findall(text or "")
 
@@ -312,7 +350,8 @@ class PDFScanner(DataCollector):
         source = kwargs.get("source")
         chapters = kwargs.get("chapters")
         page_range = kwargs.get("page_range")
-        return self.scan_pdf(pdf_path, source=source, chapters=chapters, page_range=page_range)
+        original_filename = kwargs.get("original_filename")
+        return self.scan_pdf(pdf_path, source=source, chapters=chapters, page_range=page_range, original_filename=original_filename)
 
     def _compute_document_hash(self, pdf_path: str) -> str:
         try:
@@ -321,32 +360,9 @@ class PDFScanner(DataCollector):
         except Exception:
             return compute_content_hash(pdf_path)
 
-    def scan_pdf(
-        self,
-        pdf_path: str,
-        source: str = None,
-        chapters: Optional[List[str]] = None,
-        page_range: Optional[str] = None,
-    ) -> List[Document]:
-        if not os.path.exists(pdf_path):
-            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
-
-        title = Path(pdf_path).stem
-        document_hash = self._compute_document_hash(pdf_path)
-
-        try:
-            reader = PdfReader(pdf_path)
-        except Exception as e:
-            logger.error(f"Failed to read PDF {pdf_path}: {e}")
-            return []
-
-        PDF_SERVE_DIR.mkdir(parents=True, exist_ok=True)
-        dest_path = PDF_SERVE_DIR / Path(pdf_path).name
-        if not dest_path.exists():
-            try:
-                shutil.copy2(pdf_path, dest_path)
-            except Exception as e:
-                logger.warning(f"Could not copy PDF to serve directory: {e}")
+    def scan_pdf_chapters(self, pdf_path: str, source: str = None, original_filename: Optional[str] = None, chapters: Optional[List[str]] = None) -> List[Document]:
+        """Scan only pages matching specific chapters."""
+        return self.scan_pdf(pdf_path, source=source, original_filename=original_filename, chapters=chapters, page_range=None)
 
     def scan_pdf(
         self,
@@ -354,11 +370,12 @@ class PDFScanner(DataCollector):
         source: str = None,
         chapters: Optional[List[str]] = None,
         page_range: Optional[str] = None,
+        original_filename: Optional[str] = None,
     ) -> List[Document]:
         if not os.path.exists(pdf_path):
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
-        title = Path(pdf_path).stem
+        title = Path(original_filename).stem if original_filename else Path(pdf_path).stem
         document_hash = self._compute_document_hash(pdf_path)
 
         try:

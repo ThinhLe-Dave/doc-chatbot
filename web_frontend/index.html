@@ -134,7 +134,15 @@
                     </label>
                 </div>
                 <div style="margin-top: 12px;">
-                    <button id="pdfScanBtn">Start PDF Scanning</button>
+                    <button id="pdfPreviewBtn" style="background: #475569;">Preview Chapters</button>
+                    <button id="pdfScanBtn" style="margin-left: 8px;">Start PDF Scanning</button>
+                </div>
+                <div id="pdfscan-chapters" class="job-status" style="display: none; margin-top: 10px;"></div>
+                <div id="pdfscan-page-range-row" class="row" style="margin-top: 8px; display: none;">
+                    <label>
+                        Page Range (e.g. 1,3-5,8)
+                        <input id="pdfPageRange" type="text" placeholder="Optional page range" />
+                    </label>
                 </div>
                 <div id="pdfscan-status" class="job-status" style="display: none;"></div>
                 <div id="pdfscan-progress" class="progress" style="display: none;">
@@ -300,6 +308,15 @@
                 formData.append('ocr_language', $('pdfOcrLanguage').value);
                 formData.append('ocr_dpi', $('pdfOcrDpi').value);
 
+                const selectedChapters = Array.from(document.querySelectorAll('.pdf-chapter:checked')).map(el => el.value);
+                if (selectedChapters.length) {
+                    formData.append('chapters', selectedChapters.join(','));
+                }
+                const pageRange = ($('pdfPageRange').value || '').trim();
+                if (pageRange) {
+                    formData.append('page_range', pageRange);
+                }
+
                 const res = await fetch(`${API_BASE}/api/pdf-scan`, {
                     method: 'POST',
                     body: formData,
@@ -323,6 +340,67 @@
             }
         }
 
+        async function previewPdfChapters() {
+            const fileInput = $('pdfFile');
+            if (!fileInput.files.length) {
+                alert('Select a PDF file first.');
+                return;
+            }
+
+            const status = $('pdfscan-chapters');
+            const previewBtn = $('pdfPreviewBtn');
+            status.style.display = 'block';
+            status.textContent = 'Analyzing PDF for chapters...';
+            status.className = 'job-status success';
+            previewBtn.disabled = true;
+
+            try {
+                const formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+
+                const res = await fetch(`${API_BASE}/api/pdf-scan/preview`, {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!res.ok) {
+                    const text = await res.text();
+                    status.className = 'job-status error';
+                    status.textContent = 'Error: ' + res.status + ' - ' + text;
+                    previewBtn.disabled = false;
+                    return;
+                }
+
+                const data = await res.json();
+                renderChapterList(data.chapters || []);
+                status.textContent = data.chapters && data.chapters.length ? 'Select chapters to scan:' : 'No chapters detected. You can use page range instead.';
+                status.className = 'job-status success';
+            } catch (e) {
+                status.className = 'job-status error';
+                status.textContent = 'Error: ' + String(e);
+            } finally {
+                previewBtn.disabled = false;
+            }
+        }
+
+        function renderChapterList(chapters) {
+            const container = $('pdfscan-chapters');
+            if (!chapters.length) {
+                $('pdfscan-page-range-row').style.display = 'flex';
+                return;
+            }
+
+            const checkboxes = chapters.map((ch, idx) => {
+                const label = ch.chapter || `Pages ${ch.page}`;
+                const pageSpan = ch.pages_span ? ` (pp. ${ch.page}-${ch.pages_span})` : ` (p. ${ch.page})`;
+                return `<label style="margin-right: 10px; font-size: 13px;"><input type="checkbox" class="pdf-chapter" value="${esc(label)}" checked /> ${esc(label)}${esc(pageSpan)}</label>`;
+            }).join('');
+
+            container.innerHTML = `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;">${checkboxes}</div>`;
+            container.style.display = 'block';
+            $('pdfscan-page-range-row').style.display = 'flex';
+        }
+
         async function pollJobStatus(jobType) {
             if (!currentJobId) return;
 
@@ -335,11 +413,17 @@
             pollInterval = setInterval(async () => {
                 try {
                     const res = await fetch(`${API_BASE}/api/jobs/${currentJobId}`);
+                    if (!res.ok) {
+                        throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+                    }
                     const data = await res.json();
 
-                    if (data.status === 'running') {
+                    if (data.status === 'pending' || data.status === 'running') {
+                        progressBar.classList.add('polling');
                         if (typeof data.progress === 'number') {
                             lastPollProgress = data.progress;
+                        } else if (data.status === 'pending') {
+                            lastPollProgress = 0;
                         } else {
                             lastPollProgress = Math.min(lastPollProgress + 5, 95);
                         }
@@ -353,6 +437,8 @@
 
                     if (data.status === 'completed') {
                         lastPollProgress = 100;
+                        progressBar.style.width = '100%';
+                        progressBar.textContent = "100%";
                         clearInterval(pollInterval);
                         progressBar.classList.remove('polling');
                         status.className = 'job-status success';
@@ -471,6 +557,7 @@
         $('cancelBtn').addEventListener('click', cancelSearch);
         $('query').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
         $('scrapeBtn').addEventListener('click', scrapeWebsite);
+        $('pdfPreviewBtn').addEventListener('click', previewPdfChapters);
         $('pdfScanBtn').addEventListener('click', scanPdf);
         render([]);
     </script>

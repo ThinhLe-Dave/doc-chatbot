@@ -175,6 +175,8 @@ def pdf_scan(
     ocr_dpi: Annotated[int, typer.Option("--ocr-dpi", help="Rendering DPI for OCR")] = 200,
     ocr_preprocess: Annotated[bool, typer.Option("--ocr-preprocess/--no-ocr-preprocess", help="Preprocess OCR images (grayscale, binarize, denoise)")] = False,
     force: Annotated[bool, typer.Option("--force", help="Force reprocess even if unchanged pages are detected")] = False,
+    chapters: Annotated[Optional[List[str]], typer.Option("--chapter", "-c", help="Filter by chapter/section (repeatable)")] = None,
+    page_range: Annotated[Optional[str], typer.Option("--page-range", help="Page range filter (e.g., '1,3-5,8')")] = None,
 ):
     """
     **PDF Scanner**
@@ -198,7 +200,7 @@ def pdf_scan(
     typer.echo(f"Scanning PDF: {path}...")
 
     scanner = PDFScanner(use_ocr=use_ocr, ocr_language=ocr_language, ocr_dpi=ocr_dpi, ocr_preprocess=ocr_preprocess)
-    documents = scanner.scan_pdf(path)
+    documents = scanner.scan_pdf(path, original_filename=path, chapters=chapters, page_range=page_range)
 
     model = get_embedding_model()
     store = PostgresVectorStore(config=db_config)

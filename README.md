@@ -88,6 +88,10 @@ Extracts text from PDF files and builds document chunks directly in PostgreSQL.
 | `--ocr/--no-ocr` | Use OCR fallback for scanned PDFs | false |
 | `--ocr-language` | Tesseract language code for OCR | eng |
 | `--ocr-dpi` | Rendering DPI for OCR | 200 |
+| `--chapter, -c` | Filter by chapter/section (repeatable) | - |
+| `--page-range` | Page range filter (e.g., "1,3-5,8") | - |
+
+When using the web UI, click "Preview Chapters" to detect chapters in your PDF, then select which ones to scan. You can also specify a page range for more precise control.
 
 ### Clear the database
 
