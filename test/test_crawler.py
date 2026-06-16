@@ -17,6 +17,22 @@ class MockResponse:
     text = "<html><head><title>Test Page</title></head><body><p>Test content</p></body></html>"
 
 
+class MockStreamedResponse:
+    status_code = 200
+    headers = {"Content-Type": "text/html; charset=utf-8"}
+    encoding = "utf-8"
+
+    @property
+    def text(self):
+        return self._content.decode(self.encoding or "utf-8", errors="ignore")
+
+    def raise_for_status(self):
+        return None
+
+    def iter_content(self, chunk_size):
+        return [b"<html><head><title>Test Page</title></head><body><p>Test content</p></body></html>"]
+
+
 class MockSoup:
     title = type('obj', (object,), {'string': 'Test Page'})
     
@@ -62,6 +78,33 @@ class ScraperTest(unittest.TestCase):
         result = scraper.collect("http://example.com")
 
         self.assertEqual(len(result), 1)
+
+    def test_fetch_page_sets_response_content_for_text_property(self):
+        scraper = Scraper(base_url="http://example.com", output_file=self.output_path)
+        scraper.session.get = MagicMock(return_value=MockStreamedResponse())
+
+        url, response, error, not_modified = scraper._fetch_page("http://example.com")
+
+        self.assertEqual(url, "http://example.com")
+        self.assertIsNone(error)
+        self.assertFalse(not_modified)
+        self.assertIn("Test content", response.text)
+
+    def test_build_chunks(self):
+        scraper = Scraper(base_url="http://example.com", output_file=self.output_path)
+        scraper.scraped_data = [{
+            "id": "test-doc",
+            "url": "http://example.com",
+            "source": "http://example.com",
+            "title": "Test Page",
+            "headers": [],
+            "content": "Test content for chunking.",
+        }]
+
+        chunk_count, chunk_file = scraper.build_chunks()
+
+        self.assertGreater(chunk_count, 0)
+        self.assertTrue(os.path.exists(chunk_file))
 
     @patch("datacollector.crawler.Scraper._fetch_page")
     def test_export_to_json(self, mock_fetch):

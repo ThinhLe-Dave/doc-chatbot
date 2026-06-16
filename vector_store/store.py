@@ -6,7 +6,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from utils.logging import debug
+from utils.logging import debug, split_stats, text_sample
 from vector_store.index import SearchResult, VectorIndex, VectorStoreConfig
 
 
@@ -78,6 +78,7 @@ class VectorStore:
         if total_chunks <= 0:
             raise ValueError("No chunks found to build embeddings")
 
+
         embedding_dim = model.get_embedding_dimension()
         debug(f"build embedding_dim={embedding_dim}", "vector.store")
         memmap_path = self.config.memmap_path
@@ -103,6 +104,14 @@ class VectorStore:
         offset = 0
         for batch_index, batch in enumerate(iter_chunk_batches(chunk_file, batch_size), start=1):
             batch_texts = [chunk.content for chunk in batch]
+            print(f"[debug] vector_store.build: batch {batch_index} size={len(batch)} offset_before={offset}", flush=True)
+            for index, chunk in enumerate(batch[:5], start=1):
+                print(
+                    f"[debug] vector_store.build: batch_chunk {index}/{len(batch)} id={chunk.id} "
+                    f"chars={len(chunk.content)} {split_stats(chunk.content)} "
+                    f"preview={text_sample(chunk.content)!r}",
+                    flush=True,
+                )
             batch_embeddings = embed_texts(model, batch_texts, batch_size=batch_size)
             embeddings[offset : offset + len(batch)] = batch_embeddings
             chunk_ids.extend(chunk.id for chunk in batch)

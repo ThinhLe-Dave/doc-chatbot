@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from chunker.chunker import Chunk
 
 
+
 SQL_CREATE_DOCUMENTS_TABLE = """
     CREATE TABLE IF NOT EXISTS documents (
         id TEXT PRIMARY KEY,
@@ -177,13 +178,11 @@ def store_chunk_batch(conn, chunks: list, model) -> None:
 
     if not chunks:
         return
-    print(f"[debug] store_chunk_batch: starting with {len(chunks)} chunks", flush=True)
     embeddings = embed_texts(model, [c.content for c in chunks])
-    print(f"[debug] store_chunk_batch: got embeddings shape={embeddings.shape}", flush=True)
-    
-    print(f"[debug] store_chunk_batch: starting DB insert", flush=True)
+    if embeddings.shape[0] != len(chunks):
+        raise ValueError(f"Embedding row count mismatch: rows={embeddings.shape[0]} chunks={len(chunks)}")
+
     with conn.cursor() as cur:
-        print(f"[debug] store_chunk_batch: executing SQL_INSERT_CHUNK for {len(chunks)} rows", flush=True)
         cur.executemany(
             SQL_INSERT_CHUNK,
             [
@@ -197,15 +196,14 @@ def store_chunk_batch(conn, chunks: list, model) -> None:
                 for chunk in chunks
             ],
         )
-        print(f"[debug] store_chunk_batch: SQL_INSERT_CHUNK done, executing SQL_INSERT_EMBEDDING", flush=True)
+        embedding_rows = [
+            (chunk.id, embedding.tolist())
+            for chunk, embedding in zip(chunks, embeddings)
+        ]
         cur.executemany(
             SQL_INSERT_EMBEDDING,
-            [
-                (chunk.id, embedding.tolist())
-                for chunk, embedding in zip(chunks, embeddings)
-            ],
+            embedding_rows,
         )
-        print(f"[debug] store_chunk_batch: SQL_INSERT_EMBEDDING done", flush=True)
 
 
 def compute_content_hash(content: str) -> str:

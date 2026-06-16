@@ -31,6 +31,10 @@ def get_logging_categories() -> str:
     return get("logging", "categories", "")
 
 
+def get_debug_enabled() -> bool:
+    return _parse_bool(get("logging", "debug", "") or os.environ.get("DOC_CHATBOT_DEBUG", ""), False)
+
+
 def get_hf_token() -> str:
     return get("hf", "token", "") or os.environ.get("HF_TOKEN", "")
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import json
-import logging
 import time
 import uuid
 from collections import deque
@@ -15,7 +14,9 @@ import requests
 from bs4 import BeautifulSoup
 
 from datacollector.base import DataCollector
-from chunker.document import compute_content_hash
+from chunker.document import compute_content_hash, Document
+from chunker.chunker import get_chunk_file_path, write_chunks_to_file
+from utils.logging import debug, info, warning, error
 
 
 class Scraper(DataCollector):
@@ -47,7 +48,6 @@ class Scraper(DataCollector):
         self.max_response_bytes = max_response_bytes
         self.retries = retries
         self.sitemap_first = sitemap_first
-        self.canonical_cache: dict[str, str] = {}
         self.metrics = {
             "discovered": 0,
             "fetched": 0,
@@ -55,9 +55,6 @@ class Scraper(DataCollector):
             "failed": 0,
             "bytes": 0,
         }
-
-        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-        self.logger = logging.getLogger(__name__)
 
     def collect(self, source: str, **kwargs) -> list:
         """Collect data from the base_url by crawling the website."""
@@ -76,7 +73,7 @@ class Scraper(DataCollector):
         output_file = output_file or self.output_file
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(self.scraped_data, f, ensure_ascii=False, indent=4)
-        self.logger.info(f"Successfully exported data to {output_file}")
+        info(f"Successfully exported data to {output_file}")
         return output_file
 
     def _polite_sleep(self):
@@ -111,7 +108,8 @@ class Scraper(DataCollector):
                     body += chunk
                     if len(body) > self.max_response_bytes:
                         return url, None, ValueError("response exceeded max size"), False
-                response.text = body.decode(response.encoding or "utf-8", errors="ignore")
+                response._content = body
+                response._content_consumed = True
                 return url, response, None, False
             except requests.RequestException as e:
                 if attempt == self.retries:
@@ -157,7 +155,7 @@ class Scraper(DataCollector):
             for url in sitemap_urls:
                 if url not in self.visited_urls:
                     queue.append(url)
-            self.logger.info(f"Seeded {len(sitemap_urls)} sitemap URL(s)")
+            info(f"Seeded {len(sitemap_urls)} sitemap URL(s)")
 
         if not queue:
             queue.append(start_url)
@@ -169,7 +167,8 @@ class Scraper(DataCollector):
                 if not url or url in self.visited_urls:
                     continue
                 if not self._can_fetch(url):
-                    self.logger.warning(f"Skipping disallowed URL by robots.txt: {url}")
+                    warning(f"Skipping disallowed URL by robots.txt: {url}")
+                    debug("Skipping disallowed URL by robots.txt: {url}", "scraper")
                     continue
                 batch.append(url)
 
@@ -178,7 +177,8 @@ class Scraper(DataCollector):
 
             self.visited_urls.update(batch)
             self.metrics["discovered"] += len(batch)
-            self.logger.info(f"Processing batch: {len(batch)} url(s)")
+            info(f"Processing batch: {len(batch)} url(s)")
+            debug(f"Processing batch: {len(batch)} url(s)", "scraper")
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch), self.max_workers)) as executor:
                 futures = {executor.submit(self._fetch_page, url): url for url in batch}
@@ -189,15 +189,18 @@ class Scraper(DataCollector):
                     url, response, error, not_modified = future.result()
                     if error:
                         if isinstance(error, ValueError) and "response exceeded max size" in str(error):
-                            self.logger.warning(f"Skipped oversized response for {url}")
+                            warning(f"Skipped oversized response for {url}")
+                            debug(f"Skipped oversized response for {url}", "scraper")
                             self.metrics["skipped"] += 1
                         else:
-                            self.logger.error(f"Failed to fetch {url}: {error}")
+                            error(f"Failed to fetch {url}: {error}")
+                            debug(f"Failed to fetch {url}: {error}", "scraper")
                             self.metrics["failed"] += 1
                         continue
 
                     if not_modified and not force:
-                        self.logger.info(f"Not modified: {url}")
+                        info(f"Not modified: {url}")
+                        debug(f"Not modified: {url}", "scraper")
                         self.metrics["skipped"] += 1
                         continue
 
@@ -207,13 +210,28 @@ class Scraper(DataCollector):
                         pending_urls.extend(new_urls)
                         self.metrics["fetched"] += 1
                         self.metrics["bytes"] += len(response.text.encode("utf-8", errors="ignore"))
+                        debug(f"Fetched {url} bytes={self.metrics['bytes']}", "scraper")
                     except Exception as e:
-                        self.logger.error(f"Failed to parse {url}: {e}")
+                        error(f"Failed to parse {url}: {e}")
+                        debug(f"Failed to parse {url}: {e}", "scraper")
                         self.metrics["failed"] += 1
 
             for url in pending_urls:
                 if url not in self.visited_urls and len(self.visited_urls) + len(queue) < max_pages:
                     queue.append(url)
+
+    def build_chunks(self, output_file: str = None) -> tuple:
+        if output_file is None:
+            output_file = self.output_file
+        chunk_file = get_chunk_file_path(output_file)
+
+        if not self.scraped_data:
+            raise ValueError("No documents to chunk. Run crawl() first.")
+
+        documents = [Document.from_dict(item) for item in self.scraped_data]
+        total_chunks = write_chunks_to_file(documents, chunk_file)
+        info(f"Created {total_chunks} chunks in {chunk_file}")
+        return total_chunks, chunk_file
 
     def _canonical_netloc(self, netloc: str) -> str:
         return netloc.lower().removeprefix("www.")
@@ -259,7 +277,7 @@ class Scraper(DataCollector):
         try:
             parser.read()
         except Exception:
-            self.logger.warning("Unable to load robots.txt, continuing without robots rules.")
+            warning("Unable to load robots.txt, continuing without robots rules.")
         return parser
 
     def _can_fetch(self, url: str) -> bool:
@@ -293,7 +311,7 @@ class Scraper(DataCollector):
                 if url:
                     urls.append(url)
         except Exception as e:
-            self.logger.warning(f"Failed to load sitemap {sitemap_url}: {e}")
+            warning(f"Failed to load sitemap {sitemap_url}: {e}")
         return urls
 
     def _discover_sitemap_urls(self) -> list[str]:
@@ -329,6 +347,6 @@ def scrape_and_build_chunks(url: str, output_file: str = "website_data.json", li
     """Convenience function to crawl website and build chunks in one call."""
     scraper = Scraper(base_url=url, output_file=output_file)
     scraper.crawl(max_pages=limit)
-    scraper.export_to_json()
+    total_chunks, chunk_file = scraper.build_chunks()
     from processor.processor import build_chunk_cache
-    return build_chunk_cache(output_file)
+    return build_chunk_cache(chunk_file)
