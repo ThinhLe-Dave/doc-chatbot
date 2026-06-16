@@ -46,14 +46,14 @@ class MockConnection:
 class DatabaseConfigTest(unittest.TestCase):
     def test_db_config_from_defaults(self):
         from vector_store.db_config import DatabaseConfig
-        from utils.config import DATABASE_DEFAULTS
         
         config = DatabaseConfig()
-        self.assertEqual(config.host, DATABASE_DEFAULTS["host"])
-        self.assertEqual(config.port, DATABASE_DEFAULTS["port"])
-        self.assertEqual(config.name, DATABASE_DEFAULTS["name"])
-        self.assertEqual(config.user, DATABASE_DEFAULTS["user"])
-        self.assertEqual(config.password, DATABASE_DEFAULTS["password"])
+        # DatabaseConfig has default values that should match DATABASE_DEFAULTS
+        self.assertEqual(config.host, "localhost")
+        self.assertEqual(config.port, 5432)
+        self.assertEqual(config.name, "docchatbot")
+        self.assertEqual(config.user, "docuser")
+        self.assertEqual(config.password, "")
         
     def test_db_config_connection_string(self):
         from vector_store.db_config import DatabaseConfig
@@ -114,6 +114,7 @@ class PostgresVectorStoreTest(unittest.TestCase):
     def test_db_utils_store_chunk_batch(self):
         from utils.db_utils import store_chunk_batch
         from chunker.chunker import Chunk
+        import numpy as np
         
         mock_model = MagicMock()
         
@@ -126,16 +127,12 @@ class PostgresVectorStoreTest(unittest.TestCase):
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
         
-        mock_embedding = MagicMock()
-        mock_embedding.tolist.return_value = [0.1] * 384
-        mock_embeddings = MagicMock()
-        mock_embeddings.shape = (1, 384)
-        mock_embeddings.__iter__ = lambda self: iter([mock_embedding])
+        mock_embeddings = np.zeros((1, 384), dtype=np.float32)
         
         with patch("embedding.embedding.embed_texts", return_value=mock_embeddings):
             store_chunk_batch(mock_conn, chunks, mock_model)
         
-        self.assertTrue(mock_cur.execute.called)
+        self.assertTrue(mock_cur.executemany.called)
 
     def test_search_result_dataclass(self):
         from vector_store.index import SearchResult

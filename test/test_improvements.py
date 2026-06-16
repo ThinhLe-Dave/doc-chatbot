@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import numpy
 sys.modules['bs4'] = MagicMock()
 sys.modules['requests'] = MagicMock()
 
