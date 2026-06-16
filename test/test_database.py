@@ -128,8 +128,11 @@ class PostgresVectorStoreTest(unittest.TestCase):
         
         mock_embedding = MagicMock()
         mock_embedding.tolist.return_value = [0.1] * 384
+        mock_embeddings = MagicMock()
+        mock_embeddings.shape = (1, 384)
+        mock_embeddings.__iter__ = lambda self: iter([mock_embedding])
         
-        with patch("embedding.embedding.embed_texts", return_value=[mock_embedding]):
+        with patch("embedding.embedding.embed_texts", return_value=mock_embeddings):
             store_chunk_batch(mock_conn, chunks, mock_model)
         
         self.assertTrue(mock_cur.execute.called)
