@@ -242,7 +242,7 @@ class PDFScanner(DataCollector):
             try:
                 shutil.copy2(pdf_path, dest_path)
             except Exception as e:
-                logger.warning(f"Could not copy PDF to serve directory: {e}")
+                warning(f"Could not copy PDF to serve directory: {e}")
         return dest_path
 
     def scan_pdf(
@@ -260,7 +260,7 @@ class PDFScanner(DataCollector):
         try:
             reader = fitz.open(pdf_path)
         except Exception as e:
-            logger.error(f"Failed to read PDF {pdf_path}: {e}")
+            warning(f"Failed to read PDF {pdf_path}: {e}")
             return []
 
         self._copy_pdf_to_serve_dir(pdf_path)
