@@ -13,7 +13,7 @@ sys.modules['requests'] = MagicMock()
 
 from chunker.document import compute_content_hash
 from datacollector.crawler import Scraper
-from datacollector.pdf_scanner import PDFScanner, _page_quality
+from datacollector.pdf_scanner import PDFScanner
 
 
 class SitemapParserTest(unittest.TestCase):
@@ -105,13 +105,26 @@ class PDFScannerHashingTest(unittest.TestCase):
     def tearDown(self):
         self.tempdir.cleanup()
 
-    @patch("datacollector.pdf_scanner.PdfReader")
-    def test_scan_pdf_records_source_hash(self, mock_reader_cls):
-        mock_page = MagicMock()
-        mock_page.extract_text.return_value = "Document content here for testing page hash purposes."
-        mock_reader = MagicMock()
-        mock_reader.pages = [mock_page]
-        mock_reader_cls.return_value = mock_reader
+    @patch("datacollector.pdf_scanner.fitz.open")
+    def test_scan_pdf_records_source_hash(self, mock_fitz_open):
+        class MockFitZPage:
+            def get_text(self, mode="text"):
+                return "Document content here for testing page hash purposes."
+
+        class MockFitZDoc:
+            def __init__(self):
+                self._pages = [MockFitZPage()]
+
+            def __len__(self):
+                return len(self._pages)
+
+            def __getitem__(self, index):
+                return self._pages[index]
+
+            def close(self):
+                pass
+
+        mock_fitz_open.return_value = MockFitZDoc()
 
         scanner = PDFScanner()
         docs = scanner.scan_pdf(self.pdf_path)
@@ -119,49 +132,31 @@ class PDFScannerHashingTest(unittest.TestCase):
         self.assertIn("source_hash", docs[0].metadata)
         self.assertEqual(len(docs[0].metadata["source_hash"]), 64)
 
-    @patch("datacollector.pdf_scanner.PdfReader")
-    def test_scan_pdf_records_page_hash(self, mock_reader_cls):
-        mock_page = MagicMock()
-        mock_page.extract_text.return_value = "Page content extracted successfully for hashing."
-        mock_reader = MagicMock()
-        mock_reader.pages = [mock_page]
-        mock_reader_cls.return_value = mock_reader
+    @patch("datacollector.pdf_scanner.fitz.open")
+    def test_scan_pdf_records_page_hash(self, mock_fitz_open):
+        class MockFitZPage:
+            def get_text(self, mode="text"):
+                return "Page content extracted successfully for hashing."
+
+        class MockFitZDoc:
+            def __init__(self):
+                self._pages = [MockFitZPage()]
+
+            def __len__(self):
+                return len(self._pages)
+
+            def __getitem__(self, index):
+                return self._pages[index]
+
+            def close(self):
+                pass
+
+        mock_fitz_open.return_value = MockFitZDoc()
 
         scanner = PDFScanner()
         docs = scanner.scan_pdf(self.pdf_path)
         self.assertEqual(len(docs), 1)
         self.assertIn("page_hash", docs[0].metadata)
-
-    @patch("datacollector.pdf_scanner.PdfReader")
-    def test_ocr_preprocess_flag(self, mock_reader_cls):
-        mock_page = MagicMock()
-        mock_page.extract_text.return_value = "  \n  "
-        mock_reader = MagicMock()
-        mock_reader.pages = [mock_page]
-        mock_reader_cls.return_value = mock_reader
-
-        scanner = PDFScanner(use_ocr=True, ocr_preprocess=True)
-        scanner._ocr_page = MagicMock(return_value=("OCR text longer than required.", 0.8))
-
-        docs = scanner.scan_pdf(self.pdf_path)
-        self.assertEqual(len(docs), 1)
-        self.assertEqual(docs[0].metadata["extraction_method"], "ocr")
-
-
-class PageQualityTest(unittest.TestCase):
-    def test_near_empty_page(self):
-        result = _page_quality("   \n\n   ")
-        self.assertTrue(result["near_empty"])
-        self.assertEqual(result["word_count"], 0)
-
-    def test_clean_page(self):
-        result = _page_quality("This is a good page with enough content.")
-        self.assertFalse(result["near_empty"])
-        self.assertFalse(result["probably_broken"])
-
-    def test_header_footer_detected(self):
-        result = _page_quality("Chapter 1")
-        self.assertLessEqual(result["word_count"], 20)
 
 
 def load_suite():
@@ -172,7 +167,6 @@ def load_suite():
     suite.addTests(loader.loadTestsFromTestCase(IncrementalSkipTest))
     suite.addTests(loader.loadTestsFromTestCase(MetricsTest))
     suite.addTests(loader.loadTestsFromTestCase(PDFScannerHashingTest))
-    suite.addTests(loader.loadTestsFromTestCase(PageQualityTest))
     return suite
 
 

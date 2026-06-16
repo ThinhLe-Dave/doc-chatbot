@@ -1,14 +1,12 @@
-import io
 import json
 import logging
 import os
 import re
 import shutil
-import unicodedata
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
-from pypdf import PdfReader
+import fitz
 
 from chunker.document import Document, compute_content_hash
 from chunker.chunker import Chunker, write_chunks_to_file, get_chunk_file_path
@@ -20,21 +18,16 @@ logger = logging.getLogger(__name__)
 
 PDF_SERVE_DIR = Path(__file__).resolve().parent.parent / "pdfs"
 
-_COMMON_SHORT_WORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do", "for", "from",
-    "go", "had", "has", "he", "her", "him", "his", "if", "in", "is", "it", "me", "my",
-    "no", "not", "of", "on", "or", "our", "she", "so", "than", "that", "the", "then",
-    "this", "to", "up", "us", "was", "we", "were", "will", "with", "you",
-}
-_SINGLE_LETTER_WORDS = {"a", "I"}
-_ACRONYMS = {"AI", "EEA", "EU", "TFEU", "UK", "US"}
 _CHAPTER_RE = re.compile(r"(?m)^(\d+\.?\s*Chapter\s*\d+|\bChapter\s+\d+[:\s]|\bSection\s+\d+[:\s]|\bArticle\s+\d+[:\s])", re.IGNORECASE)
 _PAGE_HEADING_RE = re.compile(r"(?m)^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s*(?:Chapter|Section|Article)\s*\d+)$", re.IGNORECASE)
-_UPPERCASE_SUFFIXES = {"TION", "TIONS", "MENT", "MENTS", "SHIP", "SHIPS", "ENCE", "ENCES", "ANCE", "ANCES"}
-_ALPHA_TOKEN_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")
-_JOIN_SPLIT_WORD_RE = re.compile(r"\b([A-Za-zÀ-ÖØ-öø-ÿ]{1,30})\s+([A-Za-zÀ-ÖØ-öø-ÿ]{1,30})\b")
-_BROKEN_TOKEN_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _CHUNK_PREVIEW_MAX_PAGES = 50
+
+
+def _extract_text_from_page(page) -> str:
+    try:
+        return page.get_text("text") or ""
+    except Exception:
+        return ""
 
 
 def _parse_page_ranges(page_range: Optional[str], total_pages: int) -> Optional[set]:
@@ -60,65 +53,49 @@ def _parse_page_ranges(page_range: Optional[str], total_pages: int) -> Optional[
             pages.update(range(start, end + 1))
         else:
             try:
-                page = int(part)
+                page_num = int(part)
             except ValueError:
                 continue
-            if 1 <= page <= total_pages:
-                pages.add(page)
+            if 1 <= page_num <= total_pages:
+                pages.add(page_num)
     return pages if pages else None
 
 
 def preflight_chapters(pdf_path: str, max_pages: Optional[int] = _CHUNK_PREVIEW_MAX_PAGES) -> List[dict]:
-    if not os.path.exists(pdf_path):
-        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
-    try:
-        reader = PdfReader(pdf_path)
-    except Exception as exc:
-        raise RuntimeError(f"Failed to read PDF {pdf_path}: {exc}") from exc
+    reader = _get_pdf_reader(pdf_path)
 
     count = 0
     chapters: List[dict] = []
     last_chapter: Optional[str] = None
-    for page_num, page in enumerate(reader.pages, start=1):
+    for page_num in range(len(reader)):
         if max_pages is not None and count >= max_pages:
             break
         count += 1
-        try:
-            text = page.extract_text() or ""
-        except Exception:
-            text = ""
+        text = _extract_text_from_page(reader[page_num])
         if not text.strip():
             continue
         chapter = _extract_chapter_info(text)
         if chapter and chapter != last_chapter:
-            chapters.append({"chapter": chapter, "page": page_num, "pages_span": page_num})
+            chapters.append({"chapter": chapter, "page": page_num + 1, "pages_span": page_num + 1})
             last_chapter = chapter
         elif last_chapter is not None and chapters:
-            chapters[-1]["pages_span"] = page_num
+            chapters[-1]["pages_span"] = page_num + 1
     return chapters
 
 
 def compute_chapter_pages(pdf_path: str, chapters: Optional[List[str]] = None) -> tuple[Optional[set], dict[str, set], int]:
-    if not os.path.exists(pdf_path):
-        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
-    try:
-        reader = PdfReader(pdf_path)
-    except Exception as exc:
-        raise RuntimeError(f"Failed to read PDF {pdf_path}: {exc}") from exc
+    reader = _get_pdf_reader(pdf_path)
 
-    total_pages = len(reader.pages)
+    total_pages = len(reader)
     if not chapters:
         return None, {}, total_pages
 
     chapter_pages: dict[str, set] = {}
-    for page_num, page in enumerate(reader.pages, start=1):
-        try:
-            text = page.extract_text() or ""
-        except Exception:
-            text = ""
+    for page_num in range(total_pages):
+        text = _extract_text_from_page(reader[page_num])
         chapter = _extract_chapter_info(text)
         if chapter:
-            chapter_pages.setdefault(chapter, set()).add(page_num)
+            chapter_pages.setdefault(chapter, set()).add(page_num + 1)
 
     allowed_pages: set = set()
     for label in chapters:
@@ -128,141 +105,6 @@ def compute_chapter_pages(pdf_path: str, chapters: Optional[List[str]] = None) -
         return None, chapter_pages, total_pages
 
     return allowed_pages, chapter_pages, total_pages
-
-
-def _alpha_tokens(text: str) -> List[str]:
-    return _ALPHA_TOKEN_RE.findall(text or "")
-
-
-def _is_suspicious_token(token: str) -> bool:
-    if token in _SINGLE_LETTER_WORDS:
-        return False
-    if token.isupper() and len(token) <= 3:
-        return False
-    if len(token) == 1:
-        return True
-    if len(token) <= 3 and token.lower() not in _COMMON_SHORT_WORDS:
-        return True
-    return False
-
-
-def _looks_like_broken_pdf_text(text: str) -> bool:
-    tokens = _alpha_tokens(text)
-    if len(tokens) < 10:
-        return False
-    suspicious_count = sum(1 for token in tokens if _is_suspicious_token(token))
-    suspicious_ratio = suspicious_count / len(tokens)
-    return suspicious_ratio > 0.06
-
-
-def _is_garbled_text(text: str) -> bool:
-    clean = text.strip()
-    if not clean:
-        return False
-    control_count = len(_BROKEN_TOKEN_RE.findall(clean))
-    control_ratio = control_count / len(clean) if clean else 0.0
-    if control_ratio > 0.02:
-        return True
-    tokens = _alpha_tokens(clean)
-    if len(tokens) < 5:
-        return False
-    long_random = sum(1 for t in tokens if len(t) >= 8 and not any(common in t.lower() for common in _COMMON_SHORT_WORDS))
-    if long_random / len(tokens) > 0.4:
-        return True
-    return False
-
-
-def _should_join_split_words(left: str, right: str) -> bool:
-    left_lower = left.lower()
-    right_lower = right.lower()
-
-    if right == "a" and len(left) <= 3 and left_lower not in _COMMON_SHORT_WORDS:
-        return True
-    if right == "A" and left.isupper() and len(left) > 3:
-        return True
-    if left == "A" and right[:1].isupper() and len(right) > 1:
-        return False
-    if left in _SINGLE_LETTER_WORDS or right in _SINGLE_LETTER_WORDS:
-        return False
-    if len(left) == 1 and left.isupper() and left not in {"A", "I"} and len(right) > 3:
-        return True
-    if left.isupper() and len(left) <= 3:
-        if left_lower in _COMMON_SHORT_WORDS or left in _ACRONYMS:
-            return False
-        if right[:1].isupper() and len(right) > 3:
-            return True
-        if right[:1].islower():
-            return False
-    if right.isupper() and len(right) <= 3:
-        if right_lower in _COMMON_SHORT_WORDS or right in _ACRONYMS:
-            return False
-        if left.isupper() and len(left) > 3:
-            return True
-        if left[:1].islower():
-            return False
-    if left_lower in _COMMON_SHORT_WORDS and len(left) <= 3:
-        return False
-    if right_lower in _COMMON_SHORT_WORDS and len(right) <= 3:
-        return False
-    if len(right) == 1 and right.isupper() and left.isupper():
-        return True
-    if right.isupper() and right in _UPPERCASE_SUFFIXES:
-        return left.isupper() and len(left) > 3
-    if len(left) <= 3 and len(right) <= 30 and left_lower not in _COMMON_SHORT_WORDS:
-        if left.isupper() and right[:1].islower():
-            return False
-        return True
-    if len(right) <= 3 and len(left) <= 30 and right_lower not in _COMMON_SHORT_WORDS:
-        return True
-    if left.islower() and right.islower():
-        combined = left + right
-        if 4 <= len(combined) <= 30:
-            if len(left) >= 2 and len(right) >= 2:
-                return True
-            if len(combined) >= 6:
-                return True
-    if left[:1].islower() and right[:1].islower() and not left.isupper() and not right.isupper():
-        combined = left + right
-        if 5 <= len(combined) <= 28:
-            return True
-    return False
-
-
-def _join_split_words(text: str) -> str:
-    def replace(match: re.Match) -> str:
-        left, right = match.groups()
-        if _should_join_split_words(left, right):
-            return f"{left}{right}"
-        return match.group(0)
-
-    for _ in range(6):
-        updated = _JOIN_SPLIT_WORD_RE.sub(replace, text)
-        if updated == text:
-            return updated
-        text = updated
-    return text
-
-
-def _fix_split_words(text: str) -> str:
-    text = _join_split_words(text)
-    words = re.findall(r'[A-Za-zÀ-ÖØ-öø-ÿ]+', text)
-    if not words:
-        return text
-    dict_set = set(w.lower() for w in words) | set(words)
-
-    def fix_match(m: re.Match) -> str:
-        word = m.group(0)
-        lw = word.lower()
-        if lw in dict_set:
-            return word
-        for seq in range(len(lw) - 3):
-            head = lw[:seq + 2]
-            tail = lw[seq + 2:]
-            if head in dict_set and tail in dict_set and len(tail) >= 3:
-                return head + ' ' + tail
-        return word
-
-    return re.sub(r'[A-Za-zÀ-ÖØ-öø-ÿ]{6,}', fix_match, text)
 
 
 def _extract_chapter_info(text: str) -> Optional[str]:
@@ -281,19 +123,91 @@ def _extract_chapter_info(text: str) -> Optional[str]:
     return None
 
 
-def _clean_extracted_text(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text or "")
-    text = text.replace("\x00", "")
-    text = text.replace("  ", " ")
-    text = _join_split_words(text)
-    text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n[ \t]+", "\n", text)
-    text = re.sub(r" *\n *", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r" {2,}", " ", text)
-    text = re.sub(r"\s+([,.;:!?%\)\]])", r"\1", text)
-    text = re.sub(r"([\(\[\{‘" + r'"' + r"])\s+", r"\1", text)
-    return text.strip()
+def _get_pdf_reader(pdf_path: str) -> fitz.Document:
+    if not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+    try:
+        return fitz.open(pdf_path)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to read PDF {pdf_path}: {exc}") from exc
+
+
+def _get_allowed_pages(
+    reader: fitz.Document,
+    chapters: Optional[List[str]],
+    page_range: Optional[str],
+) -> tuple[Optional[set], int]:
+    total_pages = len(reader)
+    allowed_pages: Optional[set] = None
+    if chapters:
+        chapter_pages: dict[str, set] = {}
+        for page_num in range(total_pages):
+            text = _extract_text_from_page(reader[page_num])
+            chapter = _extract_chapter_info(text)
+            if chapter:
+                chapter_pages.setdefault(chapter, set()).add(page_num + 1)
+        allowed_pages = set()
+        for label in chapters:
+            allowed_pages.update(chapter_pages.get(label, set()))
+        if not allowed_pages:
+            logger.info(f"No chapters matched the selection {chapters}")
+            allowed_pages = None
+    if page_range:
+        range_pages = _parse_page_ranges(page_range, total_pages)
+        if range_pages:
+            if allowed_pages is not None:
+                allowed_pages.intersection_update(range_pages)
+            else:
+                allowed_pages = range_pages
+        if not allowed_pages:
+            logger.info(f"No pages matched the range {page_range}")
+            allowed_pages = None
+    return allowed_pages, total_pages
+
+
+def _pre_extract_pages(
+    reader: fitz.Document, allowed_pages: Optional[set]
+) -> Optional[dict[int, str]]:
+    if allowed_pages is None:
+        return None
+    pre_extracted: dict[int, str] = {}
+    for page_num in range(len(reader)):
+        if (page_num + 1) in allowed_pages:
+            raw_text = _extract_text_from_page(reader[page_num])
+            pre_extracted[page_num + 1] = raw_text
+    return pre_extracted
+
+
+def _build_page_metadata(
+    title: str,
+    page_num: int,
+    total_pages: int,
+    extraction_method: str,
+    document_hash: str,
+    text: str,
+) -> dict:
+    page_hash = compute_content_hash(text)
+    chapter = _extract_chapter_info(text)
+    return {
+        "page": page_num,
+        "total_pages": total_pages,
+        "extraction_method": extraction_method,
+        "book": re.sub(r'\s+', ' ', title.replace(".pdf", "").replace("_", " ").replace("-", " ")).strip(),
+        "chapter": chapter,
+        "source_hash": document_hash,
+        "page_hash": page_hash,
+    }
+
+
+def _create_page_document(
+    base_source: str, title: str, page_num: int, text: str, metadata: dict
+) -> Document:
+    return Document.create(
+        source=f"{base_source}#page={page_num}",
+        title=f"{title} (page {page_num})",
+        content=text,
+        metadata=metadata,
+    )
 
 
 class PDFScanner(DataCollector):
@@ -325,6 +239,16 @@ class PDFScanner(DataCollector):
     def scan_pdf_chapters(self, pdf_path: str, source: str = None, original_filename: Optional[str] = None, chapters: Optional[List[str]] = None) -> List[Document]:
         return self.scan_pdf(pdf_path, source=source, original_filename=original_filename, chapters=chapters)
 
+    def _copy_pdf_to_serve_dir(self, pdf_path: str) -> Path:
+        PDF_SERVE_DIR.mkdir(parents=True, exist_ok=True)
+        dest_path = PDF_SERVE_DIR / Path(pdf_path).name
+        if not dest_path.exists():
+            try:
+                shutil.copy2(pdf_path, dest_path)
+            except Exception as e:
+                logger.warning(f"Could not copy PDF to serve directory: {e}")
+        return dest_path
+
     def scan_pdf(
         self,
         pdf_path: str,
@@ -333,108 +257,57 @@ class PDFScanner(DataCollector):
         page_range: Optional[str] = None,
         original_filename: Optional[str] = None,
     ) -> List[Document]:
-        if not os.path.exists(pdf_path):
-            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
         title = Path(original_filename).stem if original_filename else Path(pdf_path).stem
         document_hash = self._compute_document_hash(pdf_path)
 
         try:
-            reader = PdfReader(pdf_path)
+            reader = fitz.open(pdf_path)
         except Exception as e:
             logger.error(f"Failed to read PDF {pdf_path}: {e}")
             return []
 
-        PDF_SERVE_DIR.mkdir(parents=True, exist_ok=True)
-        dest_path = PDF_SERVE_DIR / Path(pdf_path).name
-        if not dest_path.exists():
-            try:
-                shutil.copy2(pdf_path, dest_path)
-            except Exception as e:
-                logger.warning(f"Could not copy PDF to serve directory: {e}")
+        self._copy_pdf_to_serve_dir(pdf_path)
 
         base_source = source or f"/pdfs/{Path(pdf_path).name}"
-        total_pages = len(reader.pages)
-        allowed_pages: Optional[set] = None
+        total_pages = len(reader)
         skipped = 0
 
-        if chapters:
-            allowed_pages, _, total_pages = compute_chapter_pages(pdf_path, chapters)
-            if allowed_pages is None:
-                logger.info(f"No chapters matched the selection {chapters}; scanning all pages from {pdf_path}")
+        allowed_pages, total_pages = _get_allowed_pages(reader, chapters, page_range)
 
-        if page_range:
-            range_pages = _parse_page_ranges(page_range, total_pages)
-            if range_pages:
-                if allowed_pages is not None:
-                    allowed_pages.intersection_update(range_pages)
-                else:
-                    allowed_pages = range_pages
-            if not allowed_pages:
-                allowed_pages = None
-                logger.info(f"No pages matched the range {page_range}; scanning all pages from {pdf_path}")
-
-        pre_extracted: Optional[dict[int, tuple[str, Optional[str]]]] = None
-        if allowed_pages is not None:
-            pre_extracted = {}
-            for page_num, page in enumerate(reader.pages, start=1):
-                if page_num in allowed_pages:
-                    try:
-                        raw_text = page.extract_text() or ""
-                    except Exception:
-                        raw_text = ""
-                    pre_extracted[page_num] = (raw_text, None)
+        pre_extracted = _pre_extract_pages(reader, allowed_pages)
 
         self.documents = []
-        for page_num, page in enumerate(reader.pages, start=1):
+        for page_num in range(total_pages):
             try:
-                if allowed_pages is not None and page_num not in allowed_pages:
+                actual_page_num = page_num + 1
+                if allowed_pages is not None and actual_page_num not in allowed_pages:
                     skipped += 1
                     continue
-                if pre_extracted and pre_extracted.get(page_num) is not None:
-                    raw_text, _ = pre_extracted[page_num]
-                    text, extraction_method = self._extract_page_text(pdf_path, page_num - 1, page, raw_text=raw_text)
+                if pre_extracted and pre_extracted.get(actual_page_num) is not None:
+                    raw_text = pre_extracted[actual_page_num]
+                    extraction_method = "pymupdf"
                 else:
-                    text, extraction_method = self._extract_page_text(pdf_path, page_num - 1, page)
+                    raw_text = _extract_text_from_page(reader[page_num])
+                    extraction_method = "pymupdf"
+
+                text = raw_text
                 if text and text.strip():
-                    page_hash = compute_content_hash(text)
-                    chapter = _extract_chapter_info(text)
-                    metadata = {
-                        "page": page_num,
-                        "total_pages": total_pages,
-                        "extraction_method": extraction_method,
-                        "book": re.sub(r'\s+', ' ', title.replace(".pdf", "").replace("_", " ").replace("-", " ")).strip(),
-                        "chapter": chapter,
-                        "source_hash": document_hash,
-                        "page_hash": page_hash,
-                    }
-                    document = Document.create(
-                        source=f"{base_source}#page={page_num}",
-                        title=f"{title} (page {page_num})",
-                        content=text,
-                        metadata=metadata,
+                    metadata = _build_page_metadata(
+                        title, actual_page_num, total_pages, extraction_method, document_hash, text
+                    )
+                    document = _create_page_document(
+                        base_source, title, actual_page_num, text, metadata
                     )
                     self.documents.append(document)
             except Exception as e:
-                logger.warning(f"Failed to extract text from page {page_num}: {e}")
+                logger.warning(f"Failed to extract text from page {page_num + 1}: {e}")
 
         if skipped:
             logger.info(f"Skipped {skipped} pages for {pdf_path}")
         logger.info(f"Extracted {len(self.documents)} pages from {pdf_path}")
+        reader.close()
         return self.documents
-
-    def _extract_page_text(self, pdf_path: str, page_index: int, page, raw_text: Optional[str] = None) -> tuple[str, str]:
-        if raw_text is None:
-            raw_text = page.extract_text() or ""
-        cleaned_text = _clean_extracted_text(raw_text)
-
-        if cleaned_text and cleaned_text.strip() and not _looks_like_broken_pdf_text(raw_text) and not _is_garbled_text(raw_text):
-            return cleaned_text, "pypdf"
-
-        if len(cleaned_text.strip().split()) >= 8 and not _is_garbled_text(cleaned_text):
-            return cleaned_text, "pypdf-cleaned"
-
-        return "", "empty"
 
     def export_to_json(self, output_file: str = None) -> str:
         output_file = output_file or self.output_file
