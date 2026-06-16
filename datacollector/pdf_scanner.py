@@ -1,5 +1,5 @@
 import json
-import logging
+from utils.logging import debug, info, warning, error
 import os
 import re
 import shutil
@@ -11,9 +11,6 @@ import fitz
 from chunker.document import Document, compute_content_hash
 from chunker.chunker import Chunker, write_chunks_to_file, get_chunk_file_path
 from datacollector.base import DataCollector
-
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
 
 
 PDF_SERVE_DIR = Path(__file__).resolve().parent.parent / "pdfs"
@@ -150,7 +147,6 @@ def _get_allowed_pages(
         for label in chapters:
             allowed_pages.update(chapter_pages.get(label, set()))
         if not allowed_pages:
-            logger.info(f"No chapters matched the selection {chapters}")
             allowed_pages = None
     if page_range:
         range_pages = _parse_page_ranges(page_range, total_pages)
@@ -160,7 +156,6 @@ def _get_allowed_pages(
             else:
                 allowed_pages = range_pages
         if not allowed_pages:
-            logger.info(f"No pages matched the range {page_range}")
             allowed_pages = None
     return allowed_pages, total_pages
 
@@ -188,6 +183,7 @@ def _build_page_metadata(
 ) -> dict:
     page_hash = compute_content_hash(text)
     chapter = _extract_chapter_info(text)
+    info("building metadata")
     return {
         "page": page_num,
         "total_pages": total_pages,
@@ -301,11 +297,11 @@ class PDFScanner(DataCollector):
                     )
                     self.documents.append(document)
             except Exception as e:
-                logger.warning(f"Failed to extract text from page {page_num + 1}: {e}")
+                warning(f"Failed to extract text from page {page_num + 1}: {e}")
 
         if skipped:
-            logger.info(f"Skipped {skipped} pages for {pdf_path}")
-        logger.info(f"Extracted {len(self.documents)} pages from {pdf_path}")
+            info(f"Skipped {skipped} pages for {pdf_path}")
+        info(f"Extracted {len(self.documents)} pages from {pdf_path}")
         reader.close()
         return self.documents
 
@@ -317,7 +313,7 @@ class PDFScanner(DataCollector):
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
 
-        logger.info(f"Exported {len(self.documents)} documents to {output_file}")
+        info(f"Exported {len(self.documents)} documents to {output_file}")
         return output_file
 
     def build_chunks(self, output_file: str = None) -> tuple:
@@ -329,7 +325,7 @@ class PDFScanner(DataCollector):
             raise ValueError("No documents to chunk. Run scan_pdf() first.")
 
         total_chunks = write_chunks_to_file(self.documents, chunk_file)
-        logger.info(f"Created {total_chunks} chunks in {chunk_file}")
+        info(f"Created {total_chunks} chunks in {chunk_file}")
         return total_chunks, chunk_file
 
 

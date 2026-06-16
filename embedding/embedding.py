@@ -1,5 +1,3 @@
-import json
-import os
 from typing import List, Optional
 
 import numpy as np
@@ -13,6 +11,7 @@ from sentence_transformers import SentenceTransformer
 
 from chunker.chunker import count_chunks_in_json, get_chunk_file_path
 from utils.config import get_hf_token
+from utils.logging import debug, error
 
 MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 
@@ -28,7 +27,7 @@ def _get_hf_token() -> Optional[str]:
 def get_embedding_model() -> SentenceTransformer:
     global MODEL
     if MODEL is not None:
-        print("[debug] model cache hit", flush=True)
+        debug("model cache hit", category="embedding")
         return MODEL
 
     device = "cpu"
@@ -36,12 +35,12 @@ def get_embedding_model() -> SentenceTransformer:
         device = "cuda"
 
     try:
-        print(f"[debug] loading model ({MODEL_NAME}) on {device}...", flush=True)
+        debug(f"loading model ({MODEL_NAME}) on {device}...", category="embedding")
         MODEL = SentenceTransformer(MODEL_NAME, device=device)
-        print("[debug] model loaded successfully", flush=True)
+        debug("model loaded successfully", category="embedding")
         return MODEL
     except Exception as e:
-        print(f"[error] Failed to load model: {e}", flush=True)
+        error(f"Failed to load model: {e}", category="embedding")
         from chunker.document import _log_memory_error
         _log_memory_error(
             f"Failed to load the embedding model ({MODEL_NAME}). Ensure sentence-transformers is installed and internet access is available.",
@@ -52,20 +51,20 @@ def get_embedding_model() -> SentenceTransformer:
 def _get_cached_dimension(model: SentenceTransformer) -> int:
     global _MODEL_DIMENSION
     if _MODEL_DIMENSION is None:
-        print("[debug] retrieving model embedding dims", flush=True)
+        debug("retrieving model embedding dims", category="embedding")
         _MODEL_DIMENSION = model.get_embedding_dimension()
     return _MODEL_DIMENSION
 
 
 def embed_texts(model: SentenceTransformer, texts: List[str], batch_size: int = 32) -> np.ndarray:
     if not texts:
-        print("[debug] empty text list passed to embed_texts", flush=True)
+        debug("empty text list passed to embed_texts", category="embedding")
         return np.zeros((0, _get_cached_dimension(model)), dtype=np.float32)
 
     current_batch_size = batch_size
     while current_batch_size >= 1:
         try:
-            print(f"[debug] encoding batch_size={current_batch_size} text_count={len(texts)}", flush=True)
+            debug(f"encoding batch_size={current_batch_size} text_count={len(texts)}", category="embedding")
             if torch is not None:
                 with torch.no_grad():
                     embeddings = model.encode(
@@ -82,15 +81,15 @@ def embed_texts(model: SentenceTransformer, texts: List[str], batch_size: int = 
                     normalize_embeddings=True,
                 )
             result = np.asarray(embeddings, dtype=np.float32)
-            print(f"[debug] encoded shape={result.shape}", flush=True)
+            debug(f"encoded shape={result.shape}", category="embedding")
             return result
         except MemoryError:
             if current_batch_size <= 1:
                 break
-            print(f"[debug] MemoryError at batch_size={current_batch_size}; halving", flush=True)
+            debug(f"MemoryError at batch_size={current_batch_size}; halving", category="embedding")
             current_batch_size //= 2
         except Exception as e:
-            print(f"[error] embed_texts error: {type(e).__name__}: {e}", flush=True)
+            error(f"embed_texts error: {type(e).__name__}: {e}", category="embedding")
             raise
 
     from chunker.document import _log_memory_error
@@ -104,14 +103,14 @@ def embed_texts(model: SentenceTransformer, texts: List[str], batch_size: int = 
 def load_or_build_embeddings(chunk_file: str) -> tuple[np.ndarray, List[str]]:
     from vector_store.store import StaleCacheError, VectorStore
 
-    print("[debug] loading cache via VectorStore", flush=True)
+    debug("loading cache via VectorStore", category="embedding")
     store = VectorStore(chunk_file)
     try:
         store.load()
     except (FileNotFoundError, StaleCacheError):
-        print("[debug] cache miss, rebuilding", flush=True)
+        debug("cache miss, rebuilding", category="embedding")
         model = get_embedding_model()
         store.build(model)
     embeddings = store._index.embeddings if store._index else np.zeros((0, 0), dtype=np.float32)
-    print(f"[debug] loaded cache shape={embeddings.shape} ids={len(store._chunk_ids)}", flush=True)
+    debug(f"loaded cache shape={embeddings.shape} ids={len(store._chunk_ids)}", category="embedding")
     return embeddings, store._chunk_ids
