@@ -5,6 +5,8 @@ from typing import Optional, List
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "config.cfg"
+# Local config for user-specific settings (gitignored, takes precedence)
+LOCAL_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "config.local.cfg"
 
 _config: configparser.ConfigParser = configparser.ConfigParser()
 
@@ -19,6 +21,10 @@ def get(section: str, key: str, default: str = "") -> str:
 def _load(path: str | Path | None = None) -> None:
     config_path = Path(path) if path else DEFAULT_CONFIG_PATH
     _config.read(config_path)
+    # Load local config as override (gitignored)
+    local_path = LOCAL_CONFIG_PATH
+    if local_path.exists():
+        _config.read(local_path)
     _hf_token = get("hf", "token", "")
     if _hf_token and not os.environ.get("HF_TOKEN"):
         os.environ["HF_TOKEN"] = _hf_token
@@ -137,3 +143,44 @@ def get_db_password() -> str:
 
 def get_db_url() -> Optional[str]:
     return get("database", "url") or os.environ.get("DATABASE_URL")
+
+
+# Generator configuration defaults
+GENERATOR_DEFAULTS = {
+    "provider": "hf_api",
+    # NOTE: Change this default model to switch models
+    # The config.cfg file takes precedence, so edit config/config.cfg for your model choice
+    "model_name": "Qwen/Qwen2.5-7B-Instruct",
+    "max_new_tokens": 512,
+    "temperature": 0.7,
+    "top_p": 0.95,
+}
+
+
+def get_generator_provider() -> str:
+    return get("generator", "provider", GENERATOR_DEFAULTS["provider"]) or GENERATOR_DEFAULTS["provider"]
+
+
+def get_generator_model_name() -> str:
+    return get("generator", "model_name") or GENERATOR_DEFAULTS["model_name"]
+
+
+def get_generator_max_new_tokens() -> int:
+    try:
+        return int(get("generator", "max_new_tokens") or str(GENERATOR_DEFAULTS["max_new_tokens"]))
+    except ValueError:
+        return GENERATOR_DEFAULTS["max_new_tokens"]
+
+
+def get_generator_temperature() -> float:
+    try:
+        return float(get("generator", "temperature") or str(GENERATOR_DEFAULTS["temperature"]))
+    except ValueError:
+        return GENERATOR_DEFAULTS["temperature"]
+
+
+def get_generator_top_p() -> float:
+    try:
+        return float(get("generator", "top_p") or str(GENERATOR_DEFAULTS["top_p"]))
+    except ValueError:
+        return GENERATOR_DEFAULTS["top_p"]

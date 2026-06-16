@@ -276,5 +276,58 @@ def clear_db(
         store.close()
 
 
+@app.command(name="chat")
+def chat(
+    query: Annotated[Optional[str], typer.Argument(help="Question to ask")] = None,
+    top_k: Annotated[int, typer.Option("--top-k", "-k", help="Number of documents to retrieve")] = None,
+    chunk_k: Annotated[int, typer.Option("--chunk-k", help="Max matched chunks per document")] = None,
+    min_score: Annotated[float, typer.Option("--min-score", help="Minimum combined score to include")] = None,
+    hybrid: Annotated[bool, typer.Option("--hybrid/--no-hybrid", help="Use hybrid semantic+keyword scoring")] = None,
+    hybrid_weight: Annotated[float, typer.Option("--hybrid-weight", help="Keyword weight in hybrid score (0-1)")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON instead of formatted text")] = False,
+):
+    """Ask a question using RAG (retrieval-augmented generation)."""
+    from processor.processor import ask_question
+    import json
+    
+    if query is None:
+        query = typer.prompt("Enter your question")
+    
+    try:
+        result = ask_question(
+            query=query,
+            top_k=top_k if top_k is not None else get_search_top_k(),
+            chunk_k=chunk_k if chunk_k is not None else get_search_chunk_k(),
+            min_score=min_score if min_score is not None else get_search_min_score(),
+            hybrid=hybrid if hybrid is not None else get_search_hybrid(),
+            hybrid_weight=hybrid_weight if hybrid_weight is not None else get_search_hybrid_weight(),
+        )
+        
+        if json_output:
+            typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            typer.secho(f"Q: {query}", fg=typer.colors.CYAN, bold=True)
+            typer.echo(f"A: {result.get('answer', 'No answer generated')}")
+            sources = result.get("sources", [])
+            if sources:
+                typer.secho(f"\nSources ({len(sources)}):", fg=typer.colors.BLACK)
+                for i, s in enumerate(sources[:3], 1):
+                    title = s.get("title") or "Untitled"
+                    typer.echo(f"  {i}. {title}")
+    except Exception as e:
+        typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+
+@app.command(name="ask")
+def ask(
+    query: Annotated[Optional[str], typer.Argument(help="Question to ask")] = None,
+    top_k: Annotated[int, typer.Option("--top-k", "-k", help="Number of documents to retrieve")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Output raw JSON instead of formatted text")] = False,
+):
+    """Ask a question (alias for chat)."""
+    return chat(query=query, top_k=top_k, json_output=json_output)
+
+
 if __name__ == "__main__":
     app()

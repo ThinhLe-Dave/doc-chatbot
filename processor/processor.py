@@ -1,5 +1,5 @@
 import re
-from typing import List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Union
 
 import numpy as np
 import typer
@@ -17,6 +17,7 @@ from utils.config import (
     get_search_min_score,
     get_search_hybrid,
     get_search_hybrid_weight,
+    get_generator_provider,
 )
 
 
@@ -295,3 +296,110 @@ def _build_document_entry(chunk_id, document_id, content, path, metadata, score_
 def _update_document_entry(entry, content, score_value, chunk_k):
     from chunker.document import update_document_entry
     update_document_entry(entry, content, score_value, chunk_k)
+
+
+def _format_context_chunks(results: List[dict]) -> str:
+    """Format search results into context for LLM prompt."""
+    if not results:
+        return "No relevant context found."
+    
+    parts = []
+    for result in results:
+        chunks = result.get("chunks") or []
+        best_chunk = result.get("best_chunk") or ""
+        
+        if isinstance(chunks, list) and chunks:
+            texts = [str(c.get("text", "")) for c in chunks if isinstance(c, dict)]
+            context_text = "\n\n".join(t for t in texts if t)
+        elif best_chunk:
+            context_text = best_chunk
+        else:
+            continue
+            
+        source = result.get("source", "Unknown source")
+        title = result.get("title", "Untitled")
+        parts.append(f"Source: {title}\n{context_text}")
+    
+    return "\n\n---\n\n".join(parts) if parts else "No relevant context found."
+
+
+def _get_generator():
+    from generator.generator import generate_answer as _generate_answer
+    return _generate_answer
+
+
+def ask_question(
+    query: str,
+    top_k: int = None,
+    chunk_k: int = None,
+    min_score: float = None,
+    hybrid: bool = None,
+    hybrid_weight: float = None,
+    categories: Optional[List[str]] = None,
+    max_new_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    stream: bool = False,
+) -> dict:
+    """
+    Ask a question using RAG: retrieve documents and generate an answer.
+    
+    Args:
+        query: The question to ask
+        top_k: Number of documents to retrieve (default from config)
+        chunk_k: Max chunks per document (default from config)
+        min_score: Minimum score threshold (default from config)
+        hybrid: Use hybrid scoring (default from config)
+        hybrid_weight: Weight for hybrid scoring (default from config)
+        categories: Filter by category (default None)
+        max_new_tokens: Max response tokens (default from config)
+        temperature: Sampling temperature (default from config)
+        top_p: Top-p sampling (default from config)
+        stream: Return streaming generator
+        
+    Returns:
+        dict with 'query', 'answer', 'sources', and optionally 'stream'
+    """
+    results = recommend_documents(
+        query=query,
+        top_k=top_k,
+        chunk_k=chunk_k,
+        min_score=min_score,
+        hybrid=hybrid,
+        hybrid_weight=hybrid_weight,
+        categories=categories,
+    )
+    
+    context = _format_context_chunks(results)
+    generate_answer = _get_generator()
+    
+    effective_top_k = top_k or get_search_top_k()
+    
+    if stream:
+        return {
+            "query": query,
+            "stream": generate_answer(
+                query=query,
+                context=context,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stream=True,
+            ),
+            "sources": results[:effective_top_k],
+        }
+    
+    answer = generate_answer(
+        query=query,
+        context=context,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        stream=False,
+    )
+    
+    return {
+        "query": query,
+        "answer": answer,
+        "sources": results[:effective_top_k],
+    }

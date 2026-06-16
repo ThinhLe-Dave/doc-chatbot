@@ -1,16 +1,17 @@
 from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
-from typing import Optional
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from typing import Optional, AsyncIterator
 import asyncio
+import json
 import os
 import uuid
 import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 
-from processor.processor import recommend_documents
+from processor.processor import recommend_documents, ask_question
 from utils.config import get_cors_allowed_origins, get_cors_allow_credentials
 
 app = FastAPI(title="Doc Chatbot", description="Semantic document search and chatbot interface")
@@ -242,3 +243,149 @@ async def get_job(job_id: str):
 async def list_jobs(limit: int = 20):
     jobs = sorted(_jobs.values(), key=lambda j: j["created_at"], reverse=True)[:limit]
     return JSONResponse(jobs)
+
+
+async def _chat_stream_generator(stream_iterator, job_id: str) -> AsyncIterator[str]:
+    """SSE generator for streaming chat responses."""
+    try:
+        for token in stream_iterator:
+            yield f"data: {json.dumps({'content': token, 'job_id': job_id})}\n\n"
+        yield "data: [DONE]\n\n"
+    except Exception as e:
+        _update_job(job_id, status="failed", error=str(e), message=f"Generation error: {e}")
+        yield f"data: {json.dumps({'error': str(e), 'job_id': job_id})}\n\n"
+
+
+async def _run_chat_job(job_id: str, query: str, top_k: int, chunk_k: int, min_score: float, hybrid: bool, hybrid_weight: float, categories: Optional[list]):
+    _update_job(job_id, status="running", message="Thinking...", progress=30)
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: ask_question(
+                query=query,
+                top_k=top_k,
+                chunk_k=chunk_k,
+                min_score=min_score,
+                hybrid=hybrid,
+                hybrid_weight=hybrid_weight,
+                categories=categories,
+            ),
+        )
+        _update_job(job_id, status="completed", progress=100, message="Done", result=result, answer=result.get("answer", ""))
+    except Exception as e:
+        _update_job(job_id, status="failed", message=str(e), error=str(e))
+
+
+@app.post("/api/chat")
+async def chat_endpoint(request: Request):
+    body = await request.json()
+    query = (body.get("query") or "").strip()
+    if not query:
+        return JSONResponse({"error": "Missing query parameter"}, status_code=400)
+
+    try:
+        top_k = int(body.get("top_k", 10))
+        chunk_k = int(body.get("chunk_k", 3))
+        min_score = float(body.get("min_score", 0.01))
+        hybrid = bool(body.get("hybrid", True))
+        hybrid_weight = float(body.get("hybrid_weight", 0.1))
+        categories = body.get("categories")
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "Invalid parameter format"}, status_code=400)
+
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {
+        "id": job_id,
+        "type": "chat",
+        "status": "pending",
+        "progress": 0,
+        "message": "Queued",
+        "input": {"query": query, "top_k": top_k},
+        "result": {},
+        "answer": "",
+        "error": None,
+        "created_at": _now_iso(),
+        "updated_at": _now_iso(),
+    }
+    task = asyncio.create_task(_run_chat_job(job_id, query, top_k, chunk_k, min_score, hybrid, hybrid_weight, categories))
+    _running_tasks.add(task)
+    task.add_done_callback(lambda t: _running_tasks.discard(t))
+    return JSONResponse({"job_id": job_id, "status": "pending"})
+
+
+@app.get("/api/chat-stream/{job_id}")
+async def chat_stream(job_id: str):
+    job = _jobs.get(job_id)
+    if not job:
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+    
+    if job["status"] == "completed":
+        return StreamingResponse(
+            _chat_stream_generator(iter([job["answer"] or ""]), job_id),
+            media_type="text/event-stream",
+        )
+    
+    if job["status"] == "failed":
+        return StreamingResponse(
+            _chat_stream_generator(iter([f"Error: {job['error']}"]), job_id),
+            media_type="text/event-stream",
+        )
+    
+    async def wait_and_stream():
+        while job["status"] == "pending" or job["status"] == "running":
+            await asyncio.sleep(0.1)
+            if job["status"] == "completed":
+                async for token in _stream_completed_job(job_id):
+                    yield token
+                return
+            if job["status"] == "failed":
+                yield f"data: {json.dumps({'error': job['error'], 'job_id': job_id})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+    
+    async def _stream_completed_job(jid: str):
+        result = _jobs.get(jid, {})
+        answer = result.get("answer", "") or ""
+        for i in range(0, len(answer), 5):
+            yield f"data: {json.dumps({'content': answer[i:i+5], 'job_id': jid})}\n\n"
+        yield "data: [DONE]\n\n"
+    
+    return StreamingResponse(wait_and_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/chat-direct")
+async def chat_direct(request: Request):
+    body = await request.json()
+    query = (body.get("query") or "").strip()
+    if not query:
+        return JSONResponse({"error": "Missing query parameter"}, status_code=400)
+
+    try:
+        top_k = int(body.get("top_k", 10))
+        chunk_k = int(body.get("chunk_k", 3))
+        min_score = float(body.get("min_score", 0.01))
+        hybrid = bool(body.get("hybrid", True))
+        hybrid_weight = float(body.get("hybrid_weight", 0.1))
+        categories = body.get("categories")
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "Invalid parameter format"}, status_code=400)
+
+    try:
+        result = ask_question(
+            query=query,
+            top_k=top_k,
+            chunk_k=chunk_k,
+            min_score=min_score,
+            hybrid=hybrid,
+            hybrid_weight=hybrid_weight,
+            categories=categories,
+            stream=False,
+        )
+        return JSONResponse({
+            "query": query,
+            "answer": result.get("answer", ""),
+            "sources": result.get("sources", []),
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)

@@ -7,3 +7,5 @@ beautifulsoup4
 requests
 pymupdf
 psycopg[binary,pool]
+huggingface_hub
+openai

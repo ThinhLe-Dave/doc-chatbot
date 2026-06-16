@@ -57,6 +57,7 @@ print_success() {
     echo "------------------------------------------------"
     echo "🔧 To run full setup (env + install):  ./run.sh setup"
     echo "🔍 To search via CLI:                  ./run.sh search <query>"
+    echo "💬 To chat via CLI:                    ./run.sh chat <question>"
     echo "📄 To scan a PDF:                      ./run.sh pdf-scan <path_to_pdf>"
     echo "🌐 To scrape a website:                ./run.sh scrape <url>"
     echo "🌐 To run the web UI:                  ./run.sh serve --help"
@@ -181,6 +182,12 @@ main() {
     if [[ "$1" == "clear-db" ]]; then
         shift
         run_app clear-db "$@"
+        exit 0
+    fi
+
+    if [[ "$1" == "chat" ]]; then
+        shift
+        run_app chat "$@"
         exit 0
     fi
 

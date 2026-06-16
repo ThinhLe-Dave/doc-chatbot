@@ -35,6 +35,18 @@ button[type="submit"]:disabled { background: #ccc; cursor: not-allowed; }
 .result-excerpt { margin-top: 8px; font-size: 14px; line-height: 1.6; color: #333; background: #f8f9fa; padding: 10px; border-radius: 6px; border-left: 3px solid #1a73e8; }
 .error { color: #d93025; background: #fce8e6; padding: 12px; border-radius: 4px; margin-top: 12px; }
 .loading { text-align: center; padding: 20px; color: #666; }
+
+/* Chat styles */
+.chat-container { display: flex; flex-direction: column; height: 60vh; }
+.chat-messages { flex: 1; overflow-y: auto; padding: 10px 0; margin-bottom: 10px; min-height: 200px; max-height: 400px; }
+.chat-message { margin-bottom: 16px; padding: 12px; border-radius: 8px; }
+.chat-message.user { background: #e8f0fe; margin-left: 40px; }
+.chat-message.assistant { background: #f5f5f5; margin-right: 40px; }
+.chat-message-sources { font-size: 12px; color: #666; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e0e0e0; }
+.chat-input-form { display: flex; gap: 8px; }
+.chat-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+.chat-send-btn { padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 4px; cursor: pointer; }
+.chat-typing { color: #666; font-style: italic; padding: 8px; }
 </style>
 </head>
 <body>
@@ -42,6 +54,7 @@ button[type="submit"]:disabled { background: #ccc; cursor: not-allowed; }
 <h1>Doc Chatbot</h1>
 <div class="tabs">
 <button class="tab active" data-panel="search-panel">Search</button>
+<button class="tab" data-panel="chat-panel">Chat</button>
 <button class="tab" data-panel="scrape-panel">Scrape Website</button>
 <button class="tab" data-panel="pdf-panel">Scan PDF</button>
 </div>
@@ -57,6 +70,16 @@ button[type="submit"]:disabled { background: #ccc; cursor: not-allowed; }
 </form>
 <div id="search-pagination"></div>
 <div id="search-results"></div>
+</div>
+<div id="chat-panel" class="panel">
+<div class="chat-container">
+<div id="chat-messages" class="chat-messages"></div>
+<div id="chat-typing" class="chat-typing" style="display:none;">Assistant is thinking...</div>
+<form id="chat-form" class="chat-input-form">
+<input type="text" id="chat-input" class="chat-input" placeholder="Ask a question..." autocomplete="off">
+<button type="submit" id="chat-send-btn" class="chat-send-btn">Send</button>
+</form>
+</div>
 </div>
 <div id="scrape-panel" class="panel">
 <form id="scrape-form">
@@ -340,6 +363,63 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
+
+// Chat functionality
+const chatForm = document.getElementById('chat-form');
+const chatInput = document.getElementById('chat-input');
+const chatMessages = document.getElementById('chat-messages');
+const chatTyping = document.getElementById('chat-typing');
+
+function addChatMessage(role, content, sources) {
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `chat-message ${role}`;
+    msgDiv.innerHTML = `<div class="chat-content">${escapeHtml(content)}</div>`;
+    if (sources && sources.length) {
+        const sourceDiv = document.createElement('div');
+        sourceDiv.className = 'chat-message-sources';
+        sourceDiv.textContent = `Sources: ${sources.map(s => s.title || s.source || 'Unknown').join(', ')}`;
+        msgDiv.appendChild(sourceDiv);
+    }
+    chatMessages.appendChild(msgDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+async function doChat(query) {
+    chatTyping.style.display = 'block';
+    chatInput.disabled = true;
+    
+    try {
+        const res = await fetch('/api/chat-direct', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: query,
+                top_k: 10,
+                chunk_k: 3,
+                min_score: 0.01,
+                hybrid: true,
+                hybrid_weight: 0.1,
+            })
+        });
+        const data = await res.json();
+        addChatMessage('user', query);
+        addChatMessage('assistant', data.answer || 'No answer generated', data.sources);
+    } catch (err) {
+        addChatMessage('assistant', `Error: ${err.message}`);
+    } finally {
+        chatTyping.style.display = 'none';
+        chatInput.disabled = false;
+        chatInput.value = '';
+    }
+}
+
+chatForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const query = chatInput.value.trim();
+    if (query) {
+        await doChat(query);
+    }
+});
 </script>
 </body>
 </html>
