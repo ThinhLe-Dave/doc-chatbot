@@ -22,6 +22,7 @@ from utils.config import (
     get_search_hybrid,
     get_search_hybrid_weight,
 )
+from utils.logging import debug
 
 
 def _build_doc_path(doc: Document) -> List[str]:
@@ -151,7 +152,7 @@ def scrape_website(url: str, limit: int = 10000, sitemap_first: bool = False, fo
 
 
 def scan_pdf(path: str, chapters: Optional[List[str]] = None) -> dict:
-    print("Starting PDF scan...")
+    debug("Starting PDF scan...", category="app")
     if not os.path.exists(path) or not path.lower().endswith(".pdf"):
         raise ValueError(f"Invalid PDF path: {path}")
 
@@ -232,7 +233,7 @@ def pdf_scan(
 
     Extracts text from PDF files and builds document chunks directly in PostgreSQL.
     """
-    print("Starting PDF scan...")
+    debug("Starting PDF scan...", category="app")
     path = path.strip() if path else None
     if not path:
         typer.secho("Error: No path provided. Use --help for usage.", fg=typer.colors.RED, err=True)

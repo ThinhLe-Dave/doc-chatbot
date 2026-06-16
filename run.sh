@@ -5,7 +5,24 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="$PROJECT_DIR/.venv"
+DEFAULT_VENV_DIR="$PROJECT_DIR/.venv"
+VENV_DIR="${DOC_CHATBOT_VENV_DIR:-$DEFAULT_VENV_DIR}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --venv)
+            VENV_DIR="$2"
+            shift 2
+            ;;
+        --venv=*)
+            VENV_DIR="${1#*=}"
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 check_python() {
     if ! command -v python3 &> /dev/null; then
@@ -38,10 +55,10 @@ print_success() {
     echo "------------------------------------------------"
     echo "✅ Setup finished successfully!"
     echo "------------------------------------------------"
-    echo "💡 To activate the environment manually: source .venv/bin/activate"
+    echo "🔧 To run full setup (env + install):  ./run.sh setup"
     echo "🔍 To search via CLI:                  ./run.sh search <query>"
     echo "📄 To scan a PDF:                      ./run.sh pdf-scan <path_to_pdf>"
-    echo "To scrape a website:                   ./run.sh scrape <url>"
+    echo "🌐 To scrape a website:                ./run.sh scrape <url>"
     echo "🌐 To run the web UI:                  ./run.sh serve --help"
     echo "🧪 To run tests:                       ./run.sh test"
     echo "🔨 To compile/check all .py files:     ./run.sh compile"
@@ -101,6 +118,31 @@ init() {
 main() {
     if [[ "$1" == "setup" ]]; then
         init
+        exit 0
+    fi
+
+    if [[ "$1" == "env" ]]; then
+        echo "------------------------------------------------"
+        echo "🚀 Setting up virtual environment..."
+        echo "------------------------------------------------"
+        check_python
+        setup_venv
+        init_directories
+        echo "✅ Environment ready at: $VENV_DIR"
+        exit 0
+    fi
+
+    if [[ "$1" == "install" ]]; then
+        if [ ! -d "$VENV_DIR" ]; then
+            echo "❌ Virtual environment not found at: $VENV_DIR"
+            echo "   Run './run.sh env' first to create it."
+            exit 1
+        fi
+        echo "📥 Installing dependencies..."
+        source "$VENV_DIR/bin/activate"
+        "$VENV_DIR/bin/pip" install --upgrade pip
+        "$VENV_DIR/bin/pip" install -r "$PROJECT_DIR/requirements.txt"
+        echo "✅ Dependencies installed."
         exit 0
     fi
 
