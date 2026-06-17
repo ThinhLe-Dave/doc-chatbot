@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Iterator, List, Optional
 
+from generator.prompts import SYSTEM_PROMPT, PROMPT_TEMPLATE
 from utils.config import (
     get_generator_provider,
     get_generator_model_name,
@@ -41,7 +42,9 @@ def _format_context_chunks(results: List[Dict[str, Any]]) -> str:
             
         source = result.get("source", "Unknown source")
         title = result.get("title", "Untitled")
-        parts.append(f"Source: {title}\n{context_text}")
+        chapter = result.get("chapter") or result.get("location", {}).get("chapter")
+        header = f"Source: {title}" + (f" (Chapter: {chapter})" if chapter else "")
+        parts.append(f"{header}\n{context_text}")
     
     return "\n\n---\n\n".join(parts) if parts else "No relevant context found."
 
@@ -97,8 +100,8 @@ def generate_answer(
     top_p = top_p if top_p is not None else get_generator_top_p()
     
     messages = [
-        {"role": "system", "content": "You are a helpful assistant. Answer the question based on the provided context. Be concise and cite sources when possible."},
-        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"}
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": PROMPT_TEMPLATE.format(context=context, query=query)}
     ]
     
     client = _get_hf_client()
