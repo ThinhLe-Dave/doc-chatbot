@@ -1,4 +1,14 @@
-from .generator import generate_answer, format_context, get_generator
-from .providers import hf_api
+from .generator import GenerationConfig, format_context, generate_answer, get_generator
+from .prompts import build_messages
+from .providers import hf_api, local, openai_api
 
-__all__ = ["generate_answer", "format_context", "get_generator", "hf_api"]
+__all__ = [
+    "GenerationConfig",
+    "build_messages",
+    "format_context",
+    "generate_answer",
+    "get_generator",
+    "hf_api",
+    "local",
+    "openai_api",
+]

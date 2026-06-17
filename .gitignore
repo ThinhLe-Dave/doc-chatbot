@@ -8,8 +8,12 @@ pdfs
 .DS_Store
 config/*.token
 config/*_secret.cfg
-config/config.local.cfg  # User-specific config with API keys - gitignored
-!config/config.cfg.example  # Template for others to copy - gitincluded
+# User-specific config with API keys - gitignored
+config/config.local.cfg
+# Local test sample data - never commit
+test/test_sample_bible.json
+# Template for others to copy - gitincluded
+!config/config.cfg.example
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

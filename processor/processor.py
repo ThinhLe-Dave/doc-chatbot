@@ -17,7 +17,6 @@ from utils.config import (
     get_search_min_score,
     get_search_hybrid,
     get_search_hybrid_weight,
-    get_generator_provider,
 )
 
 
@@ -298,31 +297,6 @@ def _update_document_entry(entry, content, score_value, chunk_k):
     update_document_entry(entry, content, score_value, chunk_k)
 
 
-def _format_context_chunks(results: List[dict]) -> str:
-    """Format search results into context for LLM prompt."""
-    if not results:
-        return "No relevant context found."
-    
-    parts = []
-    for result in results:
-        chunks = result.get("chunks") or []
-        best_chunk = result.get("best_chunk") or ""
-        
-        if isinstance(chunks, list) and chunks:
-            texts = [str(c.get("text", "")) for c in chunks if isinstance(c, dict)]
-            context_text = "\n\n".join(t for t in texts if t)
-        elif best_chunk:
-            context_text = best_chunk
-        else:
-            continue
-            
-        source = result.get("source", "Unknown source")
-        title = result.get("title", "Untitled")
-        parts.append(f"Source: {title}\n{context_text}")
-    
-    return "\n\n---\n\n".join(parts) if parts else "No relevant context found."
-
-
 def _get_generator():
     from generator.generator import generate_answer as _generate_answer
     return _generate_answer
@@ -360,6 +334,8 @@ def ask_question(
     Returns:
         dict with 'query', 'answer', 'sources', and optionally 'stream'
     """
+    from generator.generator import format_context
+
     results = recommend_documents(
         query=query,
         top_k=top_k,
@@ -370,7 +346,7 @@ def ask_question(
         categories=categories,
     )
     
-    context = _format_context_chunks(results)
+    context = format_context(results)
     generate_answer = _get_generator()
     
     effective_top_k = top_k or get_search_top_k()
