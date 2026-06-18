@@ -311,9 +311,9 @@ def chat(
             sources = result.get("sources", [])
             if sources:
                 typer.secho(f"\nSources ({len(sources)}):", fg=typer.colors.BLACK)
-                for i, s in enumerate(sources[:3], 1):
-                    title = s.get("title") or "Untitled"
-                    typer.echo(f"  {i}. {title}")
+            for i, s in enumerate(sources, 1):
+                title = s.get("title") or "Untitled"
+                typer.echo(f"  {i}. {title}")
     except Exception as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)

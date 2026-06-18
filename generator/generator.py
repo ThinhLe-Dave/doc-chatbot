@@ -82,15 +82,11 @@ def _format_result(result: Mapping[str, Any], index: int) -> Optional[str]:
         return None
 
     title = _clean_text(result.get("title") or result.get("source") or f"Source {index}")
-    source = _clean_text(result.get("source"))
     location = _format_location(result)
     score = result.get("score")
     score_text = f" [score={score:.4f}]" if isinstance(score, (int, float)) else ""
 
-    header = f"Source {index}: {title}{location}{score_text}"
-    if source:
-        header = f"{header}\nSource path: {source}"
-
+    header = f"[{index}] {title}{location}{score_text}"
     return f"{header}\n{context_text}"
 
 

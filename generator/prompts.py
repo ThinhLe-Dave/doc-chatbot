@@ -4,10 +4,13 @@ NO_CONTEXT = "No relevant context found."
 NO_ANSWER = "No relevant information found in the database."
 
 SYSTEM_PROMPT = (
-    "You are a document assistant. Answer ONLY from the provided context. "
-    "If the context does not contain enough information, say exactly: "
-    f"\"{NO_ANSWER}\". Do not use outside knowledge. Be concise. "
-    "Cite sources with available book, chapter, verse, section, page, or source path."
+    "You are an expert document assistant. Answer the question using ONLY the provided context. "
+    "Do not use outside knowledge. "
+    "Start every piece of information with the exact reference shown at the beginning of the matching numbered block, "
+    "using the format 'Reference - answer text' (for example, 'Matthew 1:18 - Now this is how...'). "
+    "When the answer contains multiple references, prefix each fact or quote with its own reference. "
+    "Be concise and accurate. "
+    "Do not add explanations, apologies, notes, or separate source lists after your answer."
 )
 
 USER_PROMPT_TEMPLATE = """Context:

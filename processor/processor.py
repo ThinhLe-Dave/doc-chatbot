@@ -1,5 +1,5 @@
 import re
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Set, Tuple, Union
 
 import numpy as np
 import typer
@@ -7,7 +7,7 @@ import typer
 from chunker.document import deduplicate_chunks
 from chunker.chunker import Chunk
 from embedding.embedding import embed_texts, get_embedding_model
-from utils.logging import debug
+from utils.logging import debug, error
 from vector_store.db_store import PostgresVectorStore, PostgresVectorStoreError
 from vector_store.db_config import DatabaseConfig
 from utils.db_utils import SQL_GET_CHUNKS_BY_IDS, SQL_GET_CHUNK_CONTENT
@@ -18,6 +18,97 @@ from utils.config import (
     get_search_hybrid,
     get_search_hybrid_weight,
 )
+
+
+_NUMERIC_TAIL_RE = re.compile(r"/(\d+)$")
+_CONTEXT_WINDOW = 3
+
+
+def _get_document_id_for_row(row: Tuple[Any, ...]) -> Optional[str]:
+    document_id = row[1] if len(row) > 1 else None
+    if document_id:
+        return str(document_id)
+    metadata = row[4] if len(row) > 4 else {}
+    return _get_document_id(metadata)
+
+
+def _get_ordering_key(row: Tuple[Any, ...]) -> Tuple[Any, ...]:
+    chunk_id = row[0]
+    metadata = row[4] if len(row) > 4 else {}
+    if not isinstance(metadata, Mapping):
+        return (chunk_id,)
+
+    meta = metadata
+    chunk_index = meta.get("chunk_index")
+    if chunk_index is not None:
+        try:
+            return (int(chunk_index), chunk_id)
+        except (TypeError, ValueError):
+            pass
+
+    for key in ("page", "verse", "section"):
+        value = meta.get(key)
+        if value is not None:
+            try:
+                return (int(value), chunk_id)
+            except (TypeError, ValueError):
+                continue
+
+    path = metadata.get("path")
+    if isinstance(path, list):
+        last = path[-1] if path else ""
+        match = _NUMERIC_TAIL_RE.search(f"/{last}")
+        if match:
+            try:
+                return (int(match.group(1)), chunk_id)
+            except (TypeError, ValueError):
+                pass
+
+    return (chunk_id,)
+
+
+def _expand_candidate_chunks(
+    store: PostgresVectorStore,
+    candidate_ids: Set[str],
+) -> Set[str]:
+    if not candidate_ids:
+        return candidate_ids
+
+    expanded = set(candidate_ids)
+    try:
+        store.load()
+        with store._conn.cursor() as cur:
+            cur.execute(
+                SQL_GET_CHUNKS_BY_IDS,
+                (list(candidate_ids),),
+            )
+            rows = cur.fetchall()
+    except Exception as exc:
+        debug(f"context expansion fetch failed: {exc}", "processor")
+        return expanded
+
+    doc_chunks: Dict[str, List[Tuple[Any, str]]] = {}
+    for row in rows:
+        chunk_id = row[0]
+        doc_id = _get_document_id_for_row(row)
+        if not doc_id:
+            continue
+        ordering = _get_ordering_key(row)
+        doc_chunks.setdefault(doc_id, []).append((ordering, chunk_id))
+
+    neighbor_ids: List[str] = []
+    for doc_id, items in doc_chunks.items():
+        items.sort()
+        ids = [cid for _, cid in items]
+        for position, cid in enumerate(ids):
+            start = max(0, position - _CONTEXT_WINDOW)
+            end = min(len(ids), position + _CONTEXT_WINDOW + 1)
+            neighbor_ids.extend(ids[start:end])
+
+    if neighbor_ids:
+        expanded.update(neighbor_ids)
+
+    return expanded
 
 
 def _truncate_preview(text: str, max_len: int = 220) -> str:
@@ -143,10 +234,13 @@ def _rank_results(
     store = PostgresVectorStore(config=db_config)
     try:
         store.load()
+        original_ids = set(candidate_ids)
+        expanded_candidate_ids = _expand_candidate_chunks(store, original_ids)
+        expanded_ids = expanded_candidate_ids - original_ids
         with store._conn.cursor() as cur:
             cur.execute(
                 SQL_GET_CHUNKS_BY_IDS,
-                (list(candidate_ids),)
+                (list(expanded_candidate_ids),)
             )
             for row in cur.fetchall():
                 chunk = Chunk(
@@ -165,7 +259,7 @@ def _rank_results(
                 if hybrid and chunk.id in keyword_scores:
                     score_value = (1.0 - hybrid_weight) * score_value + hybrid_weight * keyword_scores[chunk.id]
 
-                if score_value < min_score:
+                if chunk.id in original_ids and score_value < min_score:
                     continue
 
                 document_id = chunk.document_id
@@ -183,12 +277,38 @@ def _rank_results(
                     )
                     document_chunks[document_id] = entry
                 else:
-                    _update_document_entry(entry, chunk.content, score_value, chunk_k)
+                    entry["chunks"].append((score_value, chunk.content))
+                    if score_value > entry["score"]:
+                        entry["score"] = score_value
+                        entry["best_chunk"] = chunk.content
+                        meta = chunk.metadata or {}
+                        entry["title"] = meta.get("title", entry.get("title", ""))
+                        entry["source"] = meta.get("source", entry.get("source", ""))
+                        entry["book"] = meta.get("book", entry.get("book"))
+                        entry["chapter"] = meta.get("chapter", entry.get("chapter"))
+                        entry["verse"] = meta.get("verse", entry.get("verse"))
+                        entry["section"] = meta.get("section", entry.get("section"))
+                        entry["path"] = chunk.path or entry.get("path", [])
+                        entry["location"] = {
+                            k: v
+                            for k, v in {
+                                "book": entry.get("book"),
+                                "chapter": entry.get("chapter"),
+                                "verse": entry.get("verse"),
+                                "section": entry.get("section"),
+                            }.items()
+                            if v
+                        }
     finally:
         store.close()
 
     for doc in document_chunks.values():
         doc["chunks"] = deduplicate_chunks(doc["chunks"])
+        if chunk_k and len(doc["chunks"]) > chunk_k:
+            doc["chunks"] = sorted(doc["chunks"], key=lambda item: item.get("score", 0), reverse=True)[:chunk_k]
+        if doc["chunks"]:
+            doc["score"] = max(item.get("score", 0) for item in doc["chunks"])
+            doc["best_chunk"] = doc["chunks"][0].get("text", "")
 
     results = sorted(document_chunks.values(), key=lambda item: item["score"], reverse=True)
     final = [item for item in results if item["score"] >= min_score][:top_k]
@@ -300,6 +420,20 @@ def _update_document_entry(entry, content, score_value, chunk_k):
 def _get_generator():
     from generator.generator import generate_answer as _generate_answer
     return _generate_answer
+
+
+def _extract_cited_sources(answer_text: str, sources: list, max_sources: int = 5) -> list:
+    cited = set()
+    for match in re.findall(r"\[(\d+)\]", answer_text):
+        try:
+            index = int(match) - 1
+        except ValueError:
+            continue
+        if 0 <= index < len(sources):
+            cited.add(index)
+    if not cited:
+        return sources[:max_sources]
+    return [sources[i] for i in sorted(cited)[:max_sources]]
 
 
 def ask_question(
