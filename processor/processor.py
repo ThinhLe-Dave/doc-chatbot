@@ -350,18 +350,11 @@ def recommend_documents(
     )
 
 
-_STOPWORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "he", "in",
-    "is", "it", "its", "of", "on", "or", "should", "that", "the", "their", "this", "to", "use", "used", "was",
-    "were", "will", "with", "how",
-}
-
-
 def _extract_query_terms(query: str) -> set[str]:
     return {
         term
         for term in re.findall(r'\w+', query.lower())
-        if len(term) > 2 and term not in _STOPWORDS
+        if len(term) > 2
     }
 
 
@@ -424,13 +417,33 @@ def _get_generator():
 
 def _extract_cited_sources(answer_text: str, sources: list, max_sources: int = 5) -> list:
     cited = set()
-    for match in re.findall(r"\[(\d+)\]", answer_text):
-        try:
-            index = int(match) - 1
-        except ValueError:
-            continue
-        if 0 <= index < len(sources):
-            cited.add(index)
+    source_refs = {}
+
+    for i, s in enumerate(sources):
+        book = s.get("book") or ""
+        chapter = s.get("chapter") or ""
+        verse = s.get("verse") or ""
+        if book:
+            ref = book
+            if chapter:
+                ref += f" {chapter}"
+                if verse:
+                    ref += f":{verse}"
+            source_refs[ref] = i
+
+        for chunk in s.get("chunks", []):
+            chunk_text = chunk.get("text", "") if isinstance(chunk, dict) else ""
+            chunk_ref_match = re.match(r"^([A-Za-z]+\s*\d+(?::\d+)?)", chunk_text)
+            if chunk_ref_match:
+                chunk_ref = chunk_ref_match.group(1)
+                source_refs[chunk_ref] = i
+
+    for match in re.findall(r"\[([A-Za-z]+\s*\d+(?::\d+)?)\]", answer_text):
+        if match in source_refs:
+            cited.add(source_refs[match])
+        if match in source_refs:
+            cited.add(source_refs[match])
+
     if not cited:
         return sources[:max_sources]
     return [sources[i] for i in sorted(cited)[:max_sources]]
@@ -507,9 +520,11 @@ def ask_question(
         top_p=top_p,
         stream=False,
     )
-    
+
+    cited_sources = _extract_cited_sources(answer, results[:effective_top_k], max_sources=10)
+
     return {
         "query": query,
         "answer": answer,
-        "sources": results[:effective_top_k],
+        "sources": cited_sources,
     }
