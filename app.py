@@ -301,7 +301,7 @@ def chat(
             min_score=min_score if min_score is not None else get_search_min_score(),
             hybrid=hybrid if hybrid is not None else get_search_hybrid(),
             hybrid_weight=hybrid_weight if hybrid_weight is not None else get_search_hybrid_weight(),
-        )
+)
         
         if json_output:
             typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
@@ -311,9 +311,20 @@ def chat(
             sources = result.get("sources", [])
             if sources:
                 typer.secho(f"\nSources ({len(sources)}):", fg=typer.colors.BLACK)
-            for i, s in enumerate(sources, 1):
-                title = s.get("title") or "Untitled"
-                typer.echo(f"  {i}. {title}")
+            for s in sources:
+                book = s.get("book") or ""
+                chapter = s.get("chapter") or ""
+                verse = s.get("verse") or ""
+                if book:
+                    ref = book
+                    if chapter:
+                        ref += f" {chapter}"
+                        if verse:
+                            ref += f":{verse}"
+                    typer.echo(f"  [{ref}]")
+                else:
+                    title = s.get("title") or "Untitled"
+                    typer.echo(f"  {title}")
     except Exception as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)

@@ -373,11 +373,29 @@ const chatTyping = document.getElementById('chat-typing');
 function addChatMessage(role, content, sources) {
     const msgDiv = document.createElement('div');
     msgDiv.className = `chat-message ${role}`;
-    msgDiv.innerHTML = `<div class="chat-content">${escapeHtml(content)}</div>`;
+    const lines = String(content).split('\n').map(line => {
+        const match = line.match(/^\[([^\]]+)\]/);
+        if (match) {
+            const ref = match[1];
+            const text = line.substring(match[0].length).trim();
+            return `<div><strong>[${escapeHtml(ref)}]</strong> - ${escapeHtml(text)}</div>`;
+        }
+        return `<div>${escapeHtml(line)}</div>`;
+    }).join('');
+    msgDiv.innerHTML = `<div class="chat-content">${lines}</div>`;
     if (sources && sources.length) {
         const sourceDiv = document.createElement('div');
         sourceDiv.className = 'chat-message-sources';
-        sourceDiv.textContent = `Sources: ${sources.map(s => s.title || s.source || 'Unknown').join(', ')}`;
+        const sourceRefs = sources.map(s => {
+            if (s.book) {
+                let ref = s.book;
+                if (s.chapter) ref += ` ${s.chapter}`;
+                if (s.verse) ref += `:${s.verse}`;
+                return `[${ref}]`;
+            }
+            return s.title || s.source || 'Unknown';
+        });
+        sourceDiv.textContent = sourceRefs.join(', ');
         msgDiv.appendChild(sourceDiv);
     }
     chatMessages.appendChild(msgDiv);

@@ -55,17 +55,21 @@ def _format_location(item: Mapping[str, Any]) -> str:
     if not isinstance(metadata, Mapping):
         metadata = {}
 
-    location_parts = []
-    for key in ("book", "chapter", "verse", "section", "page"):
-        value = item.get(key) or metadata.get(key)
-        if value:
-            location_parts.append(f"{key}={value}")
-
-    path = item.get("path") or metadata.get("path") or metadata.get("headers")
-    if isinstance(path, list) and path:
-        location_parts.append("path=" + " > ".join(str(p) for p in path if str(p).strip()))
-
-    return f" ({'; '.join(location_parts)})" if location_parts else ""
+    book = item.get("book") or metadata.get("book")
+    chapter = item.get("chapter") or metadata.get("chapter")
+    verse = item.get("verse") or metadata.get("verse")
+    section = item.get("section") or metadata.get("section")
+    
+    if book:
+        ref = book
+        if chapter:
+            ref += f" {chapter}"
+            if verse:
+                ref += f":{verse}"
+        elif section:
+            ref += f" {section}"
+        return ref
+    return ""
 
 
 def _format_result(result: Mapping[str, Any], index: int) -> Optional[str]:
@@ -86,7 +90,10 @@ def _format_result(result: Mapping[str, Any], index: int) -> Optional[str]:
     score = result.get("score")
     score_text = f" [score={score:.4f}]" if isinstance(score, (int, float)) else ""
 
-    header = f"[{index}] {title}{location}{score_text}"
+    if location:
+        header = f"[{location}]"
+    else:
+        header = f"[{index}]"
     return f"{header}\n{context_text}"
 
 
