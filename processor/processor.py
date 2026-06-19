@@ -32,6 +32,29 @@ def _get_document_id_for_row(row: Tuple[Any, ...]) -> Optional[str]:
     return _get_document_id(metadata)
 
 
+def _get_document_id(metadata: Any) -> Optional[str]:
+    if not isinstance(metadata, Mapping):
+        return None
+
+    for key in ("document_id", "id"):
+        value = metadata.get(key)
+        if value:
+            return str(value)
+
+    headers = metadata.get("headers")
+    if isinstance(headers, list) and headers:
+        normalized_headers = [str(header).strip() for header in headers if str(header).strip()]
+        if normalized_headers:
+            return "/".join(normalized_headers)
+
+    for key in ("book", "chapter", "verse", "section"):
+        value = metadata.get(key)
+        if value:
+            return str(value)
+
+    return None
+
+
 def _get_ordering_key(row: Tuple[Any, ...]) -> Tuple[Any, ...]:
     chunk_id = row[0]
     metadata = row[4] if len(row) > 4 else {}

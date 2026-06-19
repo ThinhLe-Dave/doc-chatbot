@@ -1,4 +1,5 @@
 database/
+scripts/
 .kilo/
 !.kilo/architecture.json
 !.kilo/commands/
