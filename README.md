@@ -122,6 +122,7 @@ Then open `http://127.0.0.1:8000`. To run on a custom address:
 - The current embedding model is `paraphrase-multilingual-MiniLM-L12-v2` from Sentence Transformers (384 dimensions).
 - The search flow uses chunked document embeddings and a cosine similarity ranking over top results.
 - If you hit memory issues during embedding generation, reduce the number of chunks or run on a machine with more RAM.
+- To silence the HuggingFace Hub unauthenticated request warning after the model has been cached, set `HF_HUB_OFFLINE=1` when running the app. This requires an initial internet connection to download the embedding model first.
 
 ## Development
 

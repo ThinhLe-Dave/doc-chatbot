@@ -25,9 +25,6 @@ def _load(path: str | Path | None = None) -> None:
     local_path = LOCAL_CONFIG_PATH
     if local_path.exists():
         _config.read(local_path)
-    _hf_token = get("hf", "token", "")
-    if _hf_token and not os.environ.get("HF_TOKEN"):
-        os.environ["HF_TOKEN"] = _hf_token
 
 
 _load()
@@ -39,10 +36,6 @@ def get_logging_categories() -> str:
 
 def get_debug_enabled() -> bool:
     return _parse_bool(get("logging", "debug", "") or os.environ.get("DOC_CHATBOT_DEBUG", ""), False)
-
-
-def get_hf_token() -> str:
-    return get("hf", "token", "") or os.environ.get("HF_TOKEN", "")
 
 
 def _parse_bool(value: str, default: bool = False) -> bool:
@@ -151,6 +144,8 @@ GENERATOR_DEFAULTS = {
     # NOTE: Change this default model to switch models
     # The config.cfg file takes precedence, so edit config/config.cfg for your model choice
     "model_name": "Qwen/Qwen2.5-7B-Instruct",
+    "api_key": "",
+    "base_url": "",
     "max_new_tokens": 512,
     "temperature": 0.7,
     "top_p": 0.95,
@@ -163,6 +158,18 @@ def get_generator_provider() -> str:
 
 def get_generator_model_name() -> str:
     return get("generator", "model_name") or GENERATOR_DEFAULTS["model_name"]
+
+
+def get_generator_api_key() -> str:
+    raw = get("generator", "api_key", GENERATOR_DEFAULTS["api_key"])
+    if raw.strip('"').strip("'"):
+        return raw.strip('"').strip("'")
+    return os.environ.get("HF_TOKEN", os.environ.get("OPENAI_API_KEY", ""))
+
+
+def get_generator_base_url() -> str:
+    raw = get("generator", "base_url", GENERATOR_DEFAULTS["base_url"])
+    return raw.strip('"').strip("'") or os.environ.get("OPENAI_BASE_URL", "")
 
 
 def get_generator_max_new_tokens() -> int:

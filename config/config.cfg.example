@@ -28,11 +28,6 @@ hybrid_weight = 0.1
 debug = false
 categories = processor, vector.store, db.store, pdf.scanner, scraper
 
-[hf]
-# Hugging Face API token for authentication
-# Copy this file to config.cfg and set your token here, or set HF_API_KEY env var
-token = your_huggingface_token_here
-
 [database]
 # PostgreSQL connection for storing chunks and embeddings
 # Either set url or individual connection parameters
@@ -57,7 +52,12 @@ provider = hf_api
 #   - Alternative: microsoft/Phi-3-mini-4k-instruct
 # For local: mistralai/Mistral-7B-Instruct-v0.2, mistralai/Mistral-7B-Instruct-v0.3
 # For openai: gpt-4o-mini, gpt-3.5-turbo, gpt-4-turbo
+#   When api_type=openai, you can also set api_base_url to point to a compatible endpoint
 model_name = mistralai/Mistral-7B-Instruct-v0.3
+
+# OpenAI-compatible API credentials (used when provider=openai)
+# api_key = your_openai_api_key
+# api_base_url = https://api-inference.huggingface.co/models/Qwen/Qwen2.5-7B-Instruct/v1
 
 # Generation parameters
 max_new_tokens = 512

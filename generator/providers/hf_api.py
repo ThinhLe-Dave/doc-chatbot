@@ -4,11 +4,12 @@ from typing import Iterator, Optional
 
 from generator.prompts import build_messages
 from utils.config import (
+    get_generator_api_key,
+    get_generator_base_url,
     get_generator_max_new_tokens,
     get_generator_model_name,
     get_generator_temperature,
     get_generator_top_p,
-    get_hf_token,
 )
 from utils.logging import debug, error
 
@@ -23,13 +24,19 @@ def get_client():
 
     from huggingface_hub import InferenceClient
 
-    token = get_hf_token()
     model = get_generator_model_name()
-    if not token:
-        raise ValueError("HF token is not configured. Set [hf] token in config.cfg or HF_TOKEN.")
 
-    debug(f"initializing InferenceClient model={model}", "generator.hf_api")
-    _client = InferenceClient(token=token, model=model)
+    client_kwargs: dict = {"model": model}
+    api_key = get_generator_api_key()
+    if api_key:
+        client_kwargs["token"] = api_key
+    base_url = get_generator_base_url()
+    if base_url:
+        client_kwargs["base_url"] = base_url
+        client_kwargs.pop("model", None)
+
+    debug(f"initializing InferenceClient model={model} base_url={base_url or '(default)'}", "generator.hf_api")
+    _client = InferenceClient(**client_kwargs)
     return _client
 
 

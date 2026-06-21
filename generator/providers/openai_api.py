@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import os
 from typing import Iterator, Optional
 
 from generator.prompts import build_messages
 from utils.config import (
+    get_generator_api_key,
+    get_generator_base_url,
     get_generator_max_new_tokens,
     get_generator_model_name,
     get_generator_temperature,
@@ -23,12 +24,16 @@ def get_client():
 
     from openai import OpenAI
 
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = get_generator_api_key()
+    base_url = get_generator_base_url()
     if not api_key:
-        raise ValueError("OPENAI_API_KEY is not set.")
+        raise ValueError("OpenAI API key is not set. Set [generator] api_key in config or OPENAI_API_KEY env var.")
 
-    debug("initializing OpenAI client", "generator.openai")
-    _client = OpenAI(api_key=api_key)
+    debug(f"initializing OpenAI client base_url={base_url or '(default)'}", "generator.openai")
+    client_kwargs = {"api_key": api_key}
+    if base_url:
+        client_kwargs["base_url"] = base_url
+    _client = OpenAI(**client_kwargs)
     return _client
 
 

@@ -10,18 +10,12 @@ except ImportError:
 from sentence_transformers import SentenceTransformer
 
 from chunker.chunker import count_chunks_in_json, get_chunk_file_path
-from utils.config import get_hf_token
 from utils.logging import debug, error
 
 MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 
 MODEL: Optional[SentenceTransformer] = None
 _MODEL_DIMENSION: Optional[int] = None
-
-
-def _get_hf_token() -> Optional[str]:
-    token = get_hf_token()
-    return token if token else None
 
 
 def get_embedding_model() -> SentenceTransformer:

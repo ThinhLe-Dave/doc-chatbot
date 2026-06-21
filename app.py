@@ -289,10 +289,10 @@ def chat(
     """Ask a question using RAG (retrieval-augmented generation)."""
     from processor.processor import ask_question
     import json
-    
+
     if query is None:
         query = typer.prompt("Enter your question")
-    
+
     try:
         result = ask_question(
             query=query,
@@ -301,8 +301,8 @@ def chat(
             min_score=min_score if min_score is not None else get_search_min_score(),
             hybrid=hybrid if hybrid is not None else get_search_hybrid(),
             hybrid_weight=hybrid_weight if hybrid_weight is not None else get_search_hybrid_weight(),
-)
-        
+        )
+
         if json_output:
             typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
         else:
@@ -311,20 +311,30 @@ def chat(
             sources = result.get("sources", [])
             if sources:
                 typer.secho(f"\nSources ({len(sources)}):", fg=typer.colors.BLACK)
-            for s in sources:
-                book = s.get("book") or ""
-                chapter = s.get("chapter") or ""
-                verse = s.get("verse") or ""
-                if book:
-                    ref = book
-                    if chapter:
-                        ref += f" {chapter}"
-                        if verse:
-                            ref += f":{verse}"
-                    typer.echo(f"  [{ref}]")
-                else:
-                    title = s.get("title") or "Untitled"
-                    typer.echo(f"  {title}")
+                for s in sources:
+                    book = s.get("book") or ""
+                    chapter = s.get("chapter") or ""
+                    verse = s.get("verse") or ""
+                    if book:
+                        ref = book
+                        if chapter:
+                            ref += f" {chapter}"
+                            if verse:
+                                ref += f":{verse}"
+                        typer.echo(f"  [{ref}]")
+                    else:
+                        title = s.get("title") or "Untitled"
+                        typer.echo(f"  {title}")
+                    chunks = s.get("chunks") or []
+                    if chunks and isinstance(chunks[0], dict):
+                        text = chunks[0].get("text", "")
+                    else:
+                        text = s.get("best_chunk", "")
+                    if text:
+                        preview = text[:100].replace('\n', ' ')
+                        if len(text) > 100:
+                            preview += "..."
+                        typer.echo(f"    {preview}")
     except Exception as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)

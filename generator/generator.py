@@ -134,12 +134,14 @@ def generate_answer(
 
     try:
         if stream:
-            return provider.generate_stream(
-                query=query,
-                context=context,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
+            return _clean_stream(
+                provider.generate_stream(
+                    query=query,
+                    context=context,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
             )
 
         answer = provider.generate(
@@ -150,10 +152,41 @@ def generate_answer(
             top_p=top_p,
         )
         debug(f"generated answer length={len(answer)}", "generator")
-        return answer
+        return _clean_response(answer)
     except Exception as exc:
         error(f"generation failed: {exc}", "generator")
         raise
+
+
+def _clean_error_msg(msg: str) -> str:
+    import re
+    cleaned = re.sub(r"<environment_details>.*?</environment_details>", "", msg, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned.strip()
+
+
+def _clean_response(text: str) -> str:
+    import re
+    cleaned = re.sub(r"<environment_details>.*?</environment_details>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<environment_details>.*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<thinking>.*?</thinking>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<reasoning>.*?</reasoning>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned.strip()
+
+
+def _clean_stream(stream: Iterator[str]) -> Iterator[str]:
+    import re
+    buffer = ""
+    tag_re = re.compile(r"<(?:environment_details|thinking|reasoning)>.*?</(?:environment_details|thinking|reasoning)>", flags=re.DOTALL | re.IGNORECASE)
+    for chunk in stream:
+        buffer += chunk
+        cleaned = tag_re.sub("", buffer)
+        if cleaned != buffer:
+            buffer = cleaned
+        if buffer:
+            yield buffer
+            buffer = ""
+    if buffer:
+        yield buffer
 
 
 def get_generator() -> Dict[str, Any]:
