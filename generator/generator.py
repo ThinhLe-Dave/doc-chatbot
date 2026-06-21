@@ -94,7 +94,16 @@ def _format_result(result: Mapping[str, Any], index: int) -> Optional[str]:
         header = f"[{location}]"
     else:
         header = f"[{index}]"
-    return f"{header}\n{context_text}"
+    cleaned_text = _strip_leading_ref(context_text, location)
+    return f"{header}\n{cleaned_text}"
+
+
+def _strip_leading_ref(text: str, location: str) -> str:
+    import re
+    if not location:
+        return text
+    pattern = rf"^{re.escape(location)}\s*[-–—]?\s*"
+    return re.sub(pattern, "", text, flags=re.IGNORECASE)
 
 
 def format_context(results: Optional[List[Mapping[str, Any]]]) -> str:

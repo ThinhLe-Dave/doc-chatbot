@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Annotated, List, Optional
 
 import typer
@@ -23,6 +24,14 @@ from utils.config import (
     get_search_hybrid_weight,
 )
 from utils.logging import debug
+
+
+def _strip_verse_ref(text: str, ref: str) -> str:
+    import re
+    if not ref:
+        return text
+    pattern = rf"^{re.escape(ref)}\s*[-–—]?\s*"
+    return re.sub(pattern, "", text, flags=re.IGNORECASE)
 
 
 def _build_doc_path(doc: Document) -> List[str]:
@@ -331,6 +340,10 @@ def chat(
                     else:
                         text = s.get("best_chunk", "")
                     if text:
+                        ref = f"{book} {chapter}"
+                        if verse:
+                            ref += f":{verse}"
+                        text = _strip_verse_ref(text, ref)
                         preview = text[:100].replace('\n', ' ')
                         if len(text) > 100:
                             preview += "..."
