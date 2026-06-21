@@ -374,16 +374,24 @@ const chatTyping = document.getElementById('chat-typing');
 function addChatMessage(role, content, sources) {
     const msgDiv = document.createElement('div');
     msgDiv.className = `chat-message ${role}`;
-    const lines = String(content).split('\n').map(line => {
-        const match = line.match(/^\[([^\]]+)\]/);
-        if (match) {
-            const ref = match[1];
-            const text = line.substring(match[0].length).trim();
-            return `<div><strong>[${escapeHtml(ref)}]</strong> - ${escapeHtml(text)}</div>`;
+    
+    const sentences = content.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+    const htmlParts = [];
+    
+    for (const sentence of sentences) {
+        const refMatch = sentence.match(/\[([A-Za-z0-9\s:]+)\]/g);
+        if (refMatch && refMatch.length > 0) {
+            let formatted = sentence;
+            for (const ref of refMatch) {
+                formatted = formatted.replace(ref, `<strong>${ref}</strong>`);
+            }
+            htmlParts.push(`<div>${formatted}</div>`);
+        } else {
+            htmlParts.push(`<div>${escapeHtml(sentence)}</div>`);
         }
-        return `<div>${escapeHtml(line)}</div>`;
-    }).join('');
-    msgDiv.innerHTML = `<div class="chat-content">${lines}</div>`;
+    }
+    
+    msgDiv.innerHTML = `<div class="chat-content">${htmlParts.join('')}</div>`;
     if (sources && sources.length) {
         const sourceDiv = document.createElement('div');
         sourceDiv.className = 'chat-message-sources';
