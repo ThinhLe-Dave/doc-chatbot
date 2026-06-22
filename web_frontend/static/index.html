@@ -30,22 +30,19 @@ button[type="submit"]:disabled { background: #ccc; cursor: not-allowed; }
 .result-title { font-size: 16px; font-weight: 600; color: #1a73e8; margin-bottom: 4px; }
 .result-meta { font-size: 13px; color: #666; margin-bottom: 6px; }
 .result-path { font-size: 13px; color: #444; margin-top: 2px; font-style: italic; }
-.result-cats { font-size: 12px; color: #5f6368; margin-top: 2px; }
 .result-score { font-size: 12px; color: #1a73e8; margin-top: 4px; }
 .result-excerpt { margin-top: 8px; font-size: 14px; line-height: 1.6; color: #333; background: #f8f9fa; padding: 10px; border-radius: 6px; border-left: 3px solid #1a73e8; }
 .error { color: #d93025; background: #fce8e6; padding: 12px; border-radius: 4px; margin-top: 12px; }
 .loading { text-align: center; padding: 20px; color: #666; }
 
-/* Chat styles */
-.chat-container { display: flex; flex-direction: column; height: 60vh; }
+.chat-container { display: flex; flex-direction: column; max-height: 40vh; margin-top: 12px; }
 .chat-messages { flex: 1; overflow-y: auto; padding: 10px 0; margin-bottom: 10px; min-height: 200px; max-height: 400px; }
 .chat-message { margin-bottom: 16px; padding: 12px; border-radius: 8px; }
 .chat-message.user { background: #e8f0fe; margin-left: 40px; }
 .chat-message.assistant { background: #f5f5f5; margin-right: 40px; }
 .chat-message-sources { font-size: 12px; color: #666; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e0e0e0; }
-.chat-input-form { display: flex; gap: 8px; }
+.chat-input-form { display: flex; gap: 8px; margin-top: 8px; }
 .chat-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
-.chat-send-btn { padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 4px; cursor: pointer; }
 .chat-typing { color: #666; font-style: italic; padding: 8px; }
 </style>
 </head>
@@ -53,33 +50,22 @@ button[type="submit"]:disabled { background: #ccc; cursor: not-allowed; }
 <div class="container">
 <h1>Doc Chatbot</h1>
 <div class="tabs">
-<button class="tab active" data-panel="search-panel">Search</button>
-<button class="tab" data-panel="chat-panel">Chat</button>
+<button class="tab active" data-panel="search-panel">Search & Chat</button>
 <button class="tab" data-panel="scrape-panel">Scrape Website</button>
 <button class="tab" data-panel="pdf-panel">Scan PDF</button>
 </div>
 <div id="search-panel" class="panel active">
-<form id="search-form">
-<label>Query</label>
-<input type="text" id="search-query" placeholder="Enter your search query..." required>
-<label>Options</label>
-<div class="checkbox-group">
-<label><input type="checkbox" id="search-hybrid" checked> Hybrid scoring</label>
-</div>
-<button type="submit" id="search-btn">Search</button>
-</form>
-<div id="search-pagination"></div>
-<div id="search-results"></div>
-</div>
-<div id="chat-panel" class="panel">
 <div class="chat-container">
 <div id="chat-messages" class="chat-messages"></div>
 <div id="chat-typing" class="chat-typing" style="display:none;">Assistant is thinking...</div>
-<form id="chat-form" class="chat-input-form">
-<input type="text" id="chat-input" class="chat-input" placeholder="Ask a question..." autocomplete="off">
-<button type="submit" id="chat-send-btn" class="chat-send-btn">Send</button>
+<form id="search-form" class="chat-input-form">
+<input type="text" id="search-query" class="chat-input" placeholder="Enter your search query or ask a question..." required autocomplete="off">
+<button type="submit" id="search-btn">Search</button>
 </form>
+<div style="font-size:12px;color:#666;margin-top:4px;"><input type="checkbox" id="search-hybrid" checked> Hybrid scoring</div>
 </div>
+<div id="search-pagination"></div>
+<div id="search-results"></div>
 </div>
 <div id="scrape-panel" class="panel">
 <form id="scrape-form">
@@ -109,6 +95,7 @@ button[type="submit"]:disabled { background: #ccc; cursor: not-allowed; }
 </div>
 </div>
 <script>
+document.addEventListener('DOMContentLoaded', () => {
 const tabs = document.querySelectorAll('.tab');
 const panels = document.querySelectorAll('.panel');
 tabs.forEach(tab => {
@@ -119,10 +106,92 @@ tabs.forEach(tab => {
         document.getElementById(tab.dataset.panel).classList.add('active');
     });
 });
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function addChatMessage(role, content, sources) {
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `chat-message ${role}`;
+    
+    const sentences = content.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+    const htmlParts = [];
+    
+    for (const sentence of sentences) {
+        const refMatch = sentence.match(/\[([A-Za-z0-9\s:]+)\]/g);
+        if (refMatch && refMatch.length > 0) {
+            let formatted = sentence;
+            for (const ref of refMatch) {
+                formatted = formatted.replace(ref, `<strong>${ref}</strong>`);
+            }
+            htmlParts.push(`<div>${formatted}</div>`);
+        } else {
+            htmlParts.push(`<div>${escapeHtml(sentence)}</div>`);
+        }
+    }
+    
+    msgDiv.innerHTML = `<div class="chat-content">${htmlParts.join('')}</div>`;
+    if (sources && sources.length) {
+        const sourceDiv = document.createElement('div');
+        sourceDiv.className = 'chat-message-sources';
+        const sourceRefs = sources.map(s => {
+            if (s.book) {
+                let ref = s.book;
+                if (s.chapter) ref += ` ${s.chapter}`;
+                if (s.verse) ref += `:${s.verse}`;
+                return `[${ref}]`;
+            }
+            return s.title || s.source || 'Unknown';
+        });
+        sourceDiv.textContent = sourceRefs.join(', ');
+        msgDiv.appendChild(sourceDiv);
+    }
+    document.getElementById('chat-messages').appendChild(msgDiv);
+    document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+}
+
+let currentSearchPage = 1;
 document.getElementById('search-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const query = document.getElementById('search-query').value.trim();
+    if (!query) return;
+    
+    const btn = document.getElementById('search-btn');
+    const chatTyping = document.getElementById('chat-typing');
+    
     currentSearchPage = 1;
     doSearch();
+    
+    chatTyping.style.display = 'block';
+    btn.disabled = true;
+    fetch('/api/chat-direct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            query: query,
+            top_k: 10,
+            chunk_k: 3,
+            min_score: 0.01,
+            hybrid: document.getElementById('search-hybrid').checked,
+            hybrid_weight: 0.1,
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        addChatMessage('user', query);
+        addChatMessage('assistant', data.answer || 'No answer generated', data.sources);
+    })
+    .catch(err => {
+        addChatMessage('assistant', `Error: ${err.message}`);
+    })
+    .finally(() => {
+        chatTyping.style.display = 'none';
+        btn.disabled = false;
+        document.getElementById('search-query').value = '';
+    });
 });
 
 async function pollJob(jobId, resultEl, btn, originalLabel) {
@@ -285,7 +354,7 @@ function renderPagination(container, page, totalPages, onChange) {
         });
     });
 }
-let currentSearchPage = 1;
+
 async function doSearch() {
     const results = document.getElementById('search-results');
     const btn = document.getElementById('search-btn');
@@ -314,7 +383,6 @@ async function doSearch() {
         } else {
             currentSearchPage = data.page || 1;
             const totalPages = data.total_pages || 1;
-            const total = data.total || 0;
             const resultsHtml = data.results.map((r, i) => {
                 const source = String(r.source || '#');
                 const rawTitle = String(r.title || 'Untitled').replace(/<[^>]*>/g, '').trim();
@@ -359,93 +427,6 @@ async function doSearch() {
     btn.disabled = false;
     btn.textContent = 'Search';
 }
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// Chat functionality
-const chatForm = document.getElementById('chat-form');
-const chatInput = document.getElementById('chat-input');
-const chatMessages = document.getElementById('chat-messages');
-const chatTyping = document.getElementById('chat-typing');
-
-function addChatMessage(role, content, sources) {
-    const msgDiv = document.createElement('div');
-    msgDiv.className = `chat-message ${role}`;
-    
-    const sentences = content.split(/(?<=[.!?])\s+/).filter(s => s.trim());
-    const htmlParts = [];
-    
-    for (const sentence of sentences) {
-        const refMatch = sentence.match(/\[([A-Za-z0-9\s:]+)\]/g);
-        if (refMatch && refMatch.length > 0) {
-            let formatted = sentence;
-            for (const ref of refMatch) {
-                formatted = formatted.replace(ref, `<strong>${ref}</strong>`);
-            }
-            htmlParts.push(`<div>${formatted}</div>`);
-        } else {
-            htmlParts.push(`<div>${escapeHtml(sentence)}</div>`);
-        }
-    }
-    
-    msgDiv.innerHTML = `<div class="chat-content">${htmlParts.join('')}</div>`;
-    if (sources && sources.length) {
-        const sourceDiv = document.createElement('div');
-        sourceDiv.className = 'chat-message-sources';
-        const sourceRefs = sources.map(s => {
-            if (s.book) {
-                let ref = s.book;
-                if (s.chapter) ref += ` ${s.chapter}`;
-                if (s.verse) ref += `:${s.verse}`;
-                return `[${ref}]`;
-            }
-            return s.title || s.source || 'Unknown';
-        });
-        sourceDiv.textContent = sourceRefs.join(', ');
-        msgDiv.appendChild(sourceDiv);
-    }
-    chatMessages.appendChild(msgDiv);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-async function doChat(query) {
-    chatTyping.style.display = 'block';
-    chatInput.disabled = true;
-    
-    try {
-        const res = await fetch('/api/chat-direct', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                query: query,
-                top_k: 10,
-                chunk_k: 3,
-                min_score: 0.01,
-                hybrid: true,
-                hybrid_weight: 0.1,
-            })
-        });
-        const data = await res.json();
-        addChatMessage('user', query);
-        addChatMessage('assistant', data.answer || 'No answer generated', data.sources);
-    } catch (err) {
-        addChatMessage('assistant', `Error: ${err.message}`);
-    } finally {
-        chatTyping.style.display = 'none';
-        chatInput.disabled = false;
-        chatInput.value = '';
-    }
-}
-
-chatForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const query = chatInput.value.trim();
-    if (query) {
-        await doChat(query);
-    }
 });
 </script>
 </body>
