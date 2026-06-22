@@ -25,9 +25,10 @@ button[type="submit"] { padding: 10px 20px; background: #1a73e8; color: white; b
 button[type="submit"]:hover { background: #1557b0; }
 button[type="submit"]:disabled { background: #ccc; cursor: not-allowed; }
 .result { margin-top: 20px; }
-.result-item { padding: 16px; border-bottom: 1px solid #eee; }
-.result-item:last-child { border-bottom: none; }
+.result-item { padding: 16px; border-bottom: 1px solid #eee; cursor: pointer; }
+.result-item:hover { background: #f8f9fa; }
 .result-title { font-size: 16px; font-weight: 600; color: #1a73e8; margin-bottom: 4px; }
+.result-title a { color: #1a73e8; text-decoration: none; }
 .result-meta { font-size: 13px; color: #666; margin-bottom: 6px; }
 .result-path { font-size: 13px; color: #444; margin-top: 2px; font-style: italic; }
 .result-score { font-size: 12px; color: #1a73e8; margin-top: 4px; }
@@ -40,10 +41,17 @@ button[type="submit"]:disabled { background: #ccc; cursor: not-allowed; }
 .chat-message { margin-bottom: 16px; padding: 12px; border-radius: 8px; }
 .chat-message.user { background: #e8f0fe; margin-left: 40px; }
 .chat-message.assistant { background: #f5f5f5; margin-right: 40px; }
-.chat-message-sources { font-size: 12px; color: #666; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e0e0e0; }
+.chat-message-sources { font-size: 12px; color: #666; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e0e00; }
 .chat-input-form { display: flex; gap: 8px; margin-top: 8px; }
 .chat-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
 .chat-typing { color: #666; font-style: italic; padding: 8px; }
+.modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
+.modal.active { display: flex; align-items: center; justify-content: center; }
+.modal-content { background: white; padding: 20px; border-radius: 8px; max-width: 800px; max-height: 80vh; overflow-y: auto; }
+.modal-header { font-weight: 600; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #eee; }
+.modal-close { float: right; cursor: pointer; color: #666; font-size: 24px; }
+.chunk-item { padding: 12px; border-bottom: 1px solid #eee; }
+.chunk-content { font-size: 14px; line-height: 1.5; margin-top: 8px; white-space: pre-wrap; }
 </style>
 </head>
 <body>
@@ -92,6 +100,13 @@ button[type="submit"]:disabled { background: #ccc; cursor: not-allowed; }
 <button type="submit" id="pdf-btn">Scan PDF</button>
 </form>
 <div id="pdf-result"></div>
+</div>
+</div>
+<div id="document-modal" class="modal">
+<div class="modal-content">
+<span class="modal-close" id="modal-close">&times;</span>
+<div id="modal-header" class="modal-header"></div>
+<div id="modal-body"></div>
 </div>
 </div>
 <script>
@@ -152,6 +167,36 @@ function addChatMessage(role, content, sources) {
     document.getElementById('chat-messages').appendChild(msgDiv);
     document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
 }
+
+function showDocument(doc) {
+    const modal = document.getElementById('document-modal');
+    const header = document.getElementById('modal-header');
+    const body = document.getElementById('modal-body');
+    
+    header.textContent = doc.title || doc.source || 'Document';
+    
+    let html = '';
+    if (doc.chunks && doc.chunks.length) {
+        const contents = doc.chunks.map(c => c.content).filter(t => t && t.trim());
+        const combined = contents.join(' ').trim();
+        html = `<div style="font-size:16px;line-height:1.7;white-space:pre-wrap;margin-bottom:16px;">${escapeHtml(combined)}</div>`;
+    } else {
+        html = '<div class="loading">No chunks found</div>';
+    }
+    
+    body.innerHTML = html;
+    modal.classList.add('active');
+}
+
+document.getElementById('modal-close').addEventListener('click', () => {
+    document.getElementById('document-modal').classList.remove('active');
+});
+
+window.addEventListener('click', (e) => {
+    if (e.target.id === 'document-modal') {
+        document.getElementById('document-modal').classList.remove('active');
+    }
+});
 
 let currentSearchPage = 1;
 document.getElementById('search-form').addEventListener('submit', async (e) => {
@@ -409,10 +454,10 @@ async function doSearch() {
                 excerpt = excerpt.replace(/^[A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)?\s+\d+(?::\d+)?\s*[-–—]\s*/, '').trim();
                 if (excerpt.length > 200) excerpt = excerpt.slice(0, 197) + '...';
                 if (!excerpt || excerpt.length < 5) excerpt = null;
-                const sourceHref = source.startsWith('http') ? source : ('/pdfs/' + source);
+                const sourceHref = '/api/document/' + encodeURIComponent(r.id);
                 return `
-                <div class="result-item">
-                    <div class="result-title"><a href="${escapeHtml(sourceHref)}" target="_blank" rel="noopener">${i + 1}. ${escapeHtml(title)}</a></div>
+                <div class="result-item" data-doc-id="${escapeHtml(r.id)}">
+                    <div class="result-title"><a href="${escapeHtml(sourceHref)}">${i + 1}. ${escapeHtml(title)}</a></div>
                     ${readablePath ? `<div class="result-path">${escapeHtml(readablePath)}</div>` : ''}
                     <div class="result-meta">Score: ${r.score.toFixed(4)}</div>
                     ${excerpt ? `<div class="result-excerpt">${escapeHtml(excerpt)}</div>` : ''}
@@ -420,6 +465,36 @@ async function doSearch() {
             }).join('');
             results.innerHTML = resultsHtml || '<div class="result-item">No results found</div>';
             renderPagination(paginationEl, currentSearchPage, totalPages, (p) => { currentSearchPage = p; doSearch(); });
+            
+            results.querySelectorAll('.result-item').forEach(item => {
+                const link = item.querySelector('.result-title a');
+                if (link) {
+                    link.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        const docId = item.dataset.docId;
+                        if (!docId) return;
+                        fetch('/api/document/' + encodeURIComponent(docId))
+                            .then(r => r.json())
+                            .then(doc => {
+                                if (!doc.error) showDocument(doc);
+                            });
+                    });
+                }
+                item.addEventListener('click', async (e) => {
+                    if (e.target.tagName === 'A') return;
+                    const docId = item.dataset.docId;
+                    if (!docId) return;
+                    try {
+                        const res = await fetch('/api/document/' + encodeURIComponent(docId));
+                        const doc = await res.json();
+                        if (!doc.error) {
+                            showDocument(doc);
+                        }
+                    } catch (err) {
+                        console.error('Failed to load document:', err);
+                    }
+                });
+            });
         }
     } catch (err) {
         results.innerHTML = `<div class="error">Request failed: ${err.message}</div>`;

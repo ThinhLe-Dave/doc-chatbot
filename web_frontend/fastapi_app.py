@@ -58,7 +58,7 @@ def scrape_blocking(url: str, limit: int, sitemap_first: bool, force: bool, no_r
     return scrape_website(url, limit=limit, sitemap_first=sitemap_first, force=force, no_robots=no_robots)
 
 
-async def _run_pdf_scan_job(job_id: str, file_path: str, chapters: Optional[list]):
+async def _run_pdf_scan_job(job_id: str, file_path: str, chapters: Optional[list], delete_after: bool = False):
     _update_job(job_id, status="running", message="Scanning PDF...", progress=10)
     try:
         loop = asyncio.get_event_loop()
@@ -67,11 +67,12 @@ async def _run_pdf_scan_job(job_id: str, file_path: str, chapters: Optional[list
     except Exception as e:
         _update_job(job_id, status="failed", message=str(e), error=str(e))
     finally:
-        try:
-            if os.path.exists(file_path):
-                os.unlink(file_path)
-        except Exception:
-            pass
+        if delete_after:
+            try:
+                if os.path.exists(file_path):
+                    os.unlink(file_path)
+            except Exception:
+                pass
 
 
 def scan_blocking(file_path: str, chapters: Optional[list]) -> dict:
@@ -189,7 +190,7 @@ async def pdf_scan_endpoint(request: Request):
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
     }
-    task = asyncio.create_task(_run_pdf_scan_job(job_id, path, chapters))
+    task = asyncio.create_task(_run_pdf_scan_job(job_id, path, chapters, delete_after=False))
     _running_tasks.add(task)
     task.add_done_callback(lambda t: _running_tasks.discard(t))
     return JSONResponse({"job_id": job_id, "status": "pending"})
@@ -225,7 +226,7 @@ async def pdf_scan_upload(file: UploadFile = File(...)):
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
     }
-    task = asyncio.create_task(_run_pdf_scan_job(job_id, str(tmp_path), None))
+    task = asyncio.create_task(_run_pdf_scan_job(job_id, str(tmp_path), None, delete_after=True))
     _running_tasks.add(task)
     task.add_done_callback(lambda t: _running_tasks.discard(t))
     return JSONResponse({"job_id": job_id, "status": "pending"})
@@ -389,3 +390,55 @@ async def chat_direct(request: Request):
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/document/{document_id}")
+async def get_document(document_id: str):
+    """Retrieve full document content by document ID."""
+    from vector_store.db_store import PostgresVectorStore
+    from vector_store.db_config import DatabaseConfig
+    
+    db_config = DatabaseConfig.from_config_file()
+    if not db_config.is_configured():
+        return JSONResponse({"error": "Database not configured"}, status_code=500)
+    
+    try:
+        store = PostgresVectorStore(config=db_config)
+        store.load()
+        
+        with store._conn.cursor() as cur:
+            cur.execute("SELECT id, source, title, path, metadata FROM documents WHERE id = %s", (document_id,))
+            doc_row = cur.fetchone()
+            
+            if not doc_row:
+                return JSONResponse({"error": "Document not found"}, status_code=404)
+            
+            cur.execute("SELECT id, document_id, content, path, metadata FROM chunks WHERE document_id = %s ORDER BY id", (document_id,))
+            chunk_rows = cur.fetchall()
+            
+            chunks = [
+                {
+                    "id": row[0],
+                    "document_id": row[1],
+                    "content": row[2],
+                    "path": row[3] if row[3] else [],
+                    "metadata": row[4] if row[4] else {},
+                }
+                for row in chunk_rows
+            ]
+            
+            return JSONResponse({
+                "id": doc_row[0],
+                "source": doc_row[1],
+                "title": doc_row[2],
+                "path": doc_row[3] if doc_row[3] else [],
+                "metadata": doc_row[4] if doc_row[4] else {},
+                "chunks": chunks,
+            })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        try:
+            store.close()
+        except:
+            pass
