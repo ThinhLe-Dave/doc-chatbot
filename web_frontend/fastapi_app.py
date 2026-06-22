@@ -11,7 +11,25 @@ import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 
-from processor.processor import recommend_documents, ask_question
+from processor.processor import recommend_documents, ask_question, clean_content
+from processor.processor import _get_ordering_key
+
+
+def _extract_short_ref(meta: dict, location: str) -> str:
+    chapter = meta.get("chapter")
+    verse = meta.get("verse")
+    section = meta.get("section")
+    page = meta.get("page")
+    if chapter:
+        ref = str(chapter)
+        if verse:
+            ref += f":{verse}"
+        return ref
+    if section:
+        return str(section)
+    if page:
+        return f"Page {page}"
+    return ""
 from utils.config import get_cors_allowed_origins, get_cors_allow_credentials
 
 app = FastAPI(title="Doc Chatbot", description="Semantic document search and chatbot interface")
@@ -416,16 +434,45 @@ async def get_document(document_id: str):
             cur.execute("SELECT id, document_id, content, path, metadata FROM chunks WHERE document_id = %s ORDER BY id", (document_id,))
             chunk_rows = cur.fetchall()
             
-            chunks = [
-                {
+            def _make_location(meta):
+                book = meta.get("book")
+                chapter = meta.get("chapter")
+                verse = meta.get("verse")
+                section = meta.get("section")
+                page = meta.get("page")
+                if book:
+                    if chapter:
+                        ref = f"{book} {chapter}"
+                        if verse:
+                            ref += f":{verse}"
+                        return ref
+                    if section:
+                        return f"{book} {section}"
+                    if page:
+                        return f"{book} Page {page}"
+                    return book
+                if page:
+                    return f"Page {page}"
+                if section:
+                    return section
+                return ""
+            
+            chunks = []
+            for row in chunk_rows:
+                meta = row[4] if row[4] else {}
+                location = _make_location(meta)
+                content = clean_content(row[2], location=location) if row[2] else ""
+                chunks.append({
                     "id": row[0],
                     "document_id": row[1],
-                    "content": row[2],
+                    "content": content,
                     "path": row[3] if row[3] else [],
-                    "metadata": row[4] if row[4] else {},
-                }
-                for row in chunk_rows
-            ]
+                    "metadata": meta,
+                    "location": location,
+                    "short_ref": _extract_short_ref(meta, location),
+                })
+            
+            chunks.sort(key=lambda c: _get_ordering_key((c["id"], c["document_id"], c["content"], c["path"], c["metadata"])))
             
             return JSONResponse({
                 "id": doc_row[0],

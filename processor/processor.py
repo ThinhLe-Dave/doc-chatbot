@@ -59,7 +59,7 @@ def _get_ordering_key(row: Tuple[Any, ...]) -> Tuple[Any, ...]:
     chunk_id = row[0]
     metadata = row[4] if len(row) > 4 else {}
     if not isinstance(metadata, Mapping):
-        return (chunk_id,)
+        return (float("inf"), chunk_id)
 
     meta = metadata
     chunk_index = meta.get("chunk_index")
@@ -87,7 +87,7 @@ def _get_ordering_key(row: Tuple[Any, ...]) -> Tuple[Any, ...]:
             except (TypeError, ValueError):
                 pass
 
-    return (chunk_id,)
+    return (float("inf"), chunk_id)
 
 
 def _expand_candidate_chunks(
@@ -331,7 +331,7 @@ def _rank_results(
             doc["chunks"] = sorted(doc["chunks"], key=lambda item: item.get("score", 0), reverse=True)[:chunk_k]
         if doc["chunks"]:
             doc["score"] = max(item.get("score", 0) for item in doc["chunks"])
-            doc["best_chunk"] = doc["chunks"][0].get("text", "")
+            doc["best_chunk"] = clean_content(doc["chunks"][0].get("text", ""))
 
     results = sorted(document_chunks.values(), key=lambda item: item["score"], reverse=True)
     final = [item for item in results if item["score"] >= min_score][:top_k]
@@ -431,6 +431,35 @@ def _build_document_entry(chunk_id, document_id, content, path, metadata, score_
 def _update_document_entry(entry, content, score_value, chunk_k):
     from chunker.document import update_document_entry
     update_document_entry(entry, content, score_value, chunk_k)
+
+
+def _strip_leading_ref(text: str, location: str) -> str:
+    import re
+    if not location:
+        return text
+    pattern = rf"^{re.escape(location)}\s*[-–—]?\s*"
+    return re.sub(pattern, "", text, flags=re.IGNORECASE)
+
+
+def _strip_tags(text: str) -> str:
+    import re
+    cleaned = re.sub(r"<environment_details>.*?</environment_details>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<environment_details>.*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<thinking>.*?</thinking>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<thinking>.*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<reasoning>.*?</reasoning>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<reasoning>.*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned
+
+
+def clean_content(text: str, location: str = "") -> str:
+    """Remove thinking/reasoning/environment tags and strip leading location reference."""
+    if not text:
+        return ""
+    cleaned = _strip_tags(text)
+    if location:
+        cleaned = _strip_leading_ref(cleaned, location)
+    return cleaned.strip()
 
 
 def _get_generator():

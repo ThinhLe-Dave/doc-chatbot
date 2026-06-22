@@ -178,7 +178,9 @@ def _clean_response(text: str) -> str:
     cleaned = re.sub(r"<environment_details>.*?</environment_details>", "", text, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r"<environment_details>.*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r"<thinking>.*?</thinking>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<thinking>.*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r"<reasoning>.*?</reasoning>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<reasoning>.*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
     return cleaned.strip()
 
 
@@ -186,6 +188,7 @@ def _clean_stream(stream: Iterator[str]) -> Iterator[str]:
     import re
     buffer = ""
     tag_re = re.compile(r"<(?:environment_details|thinking|reasoning)>.*?</(?:environment_details|thinking|reasoning)>", flags=re.DOTALL | re.IGNORECASE)
+    unclosed_re = re.compile(r"<(?:environment_details|thinking|reasoning)>.*", flags=re.DOTALL | re.IGNORECASE)
     for chunk in stream:
         buffer += chunk
         cleaned = tag_re.sub("", buffer)
@@ -195,7 +198,9 @@ def _clean_stream(stream: Iterator[str]) -> Iterator[str]:
             yield buffer
             buffer = ""
     if buffer:
-        yield buffer
+        cleaned = unclosed_re.sub("", buffer)
+        if cleaned:
+            yield cleaned
 
 
 def get_generator() -> Dict[str, Any]:

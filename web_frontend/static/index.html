@@ -177,9 +177,24 @@ function showDocument(doc) {
     
     let html = '';
     if (doc.chunks && doc.chunks.length) {
-        const contents = doc.chunks.map(c => c.content).filter(t => t && t.trim());
-        const combined = contents.join(' ').trim();
-        html = `<div style="font-size:16px;line-height:1.7;white-space:pre-wrap;margin-bottom:16px;">${escapeHtml(combined)}</div>`;
+        let lastRef = '';
+        html = '<div class="chunks-list">';
+        for (const chunk of doc.chunks) {
+            const content = chunk.content || '';
+            const shortRef = chunk.short_ref || '';
+            const refChanged = shortRef !== lastRef;
+            lastRef = shortRef;
+            
+            html += '<div class="chunk-item" style="padding:12px;border-bottom:1px solid #eee;">';
+            if (refChanged && shortRef) {
+                html += `<div class="chunk-ref" style="font-weight:600;color:#1a73e8;margin-bottom:4px;font-size:13px;">${escapeHtml(shortRef)}</div>`;
+            }
+            if (content) {
+                html += `<div class="chunk-content" style="font-size:15px;line-height:1.7;white-space:pre-wrap;">${escapeHtml(content)}</div>`;
+            }
+            html += '</div>';
+        }
+        html += '</div>';
     } else {
         html = '<div class="loading">No chunks found</div>';
     }
