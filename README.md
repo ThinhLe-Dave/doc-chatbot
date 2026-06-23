@@ -124,6 +124,13 @@ Then open `http://127.0.0.1:8000`. To run on a custom address:
 - If you hit memory issues during embedding generation, reduce the number of chunks or run on a machine with more RAM.
 - To silence the HuggingFace Hub unauthenticated request warning after the model has been cached, set `HF_HUB_OFFLINE=1` when running the app. This requires an initial internet connection to download the embedding model first.
 
+## Recent Changes
+
+- **Document view**: chunks are now sorted by chapter/verse/page order instead of database insertion order.
+- **Content cleaning**: HTML-style thinking blocks (`<thinking>`, `<reasoning>`, `<environment_details>`) are stripped from search results and document previews.
+- **Hybrid scoring fixed**: sorting crash when metadata contains mixed numeric/string types (e.g. page numbers alongside text headers) has been resolved.
+- **Default token limit**: raised from 512 to 2048 to reduce truncated answers on long documents.
+
 ## Development
 
 To run the test suite:
