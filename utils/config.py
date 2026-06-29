@@ -191,3 +191,18 @@ def get_generator_top_p() -> float:
         return float(get("generator", "top_p") or str(GENERATOR_DEFAULTS["top_p"]))
     except ValueError:
         return GENERATOR_DEFAULTS["top_p"]
+
+
+# Feature flags for end-user capabilities
+FEATURES_DEFAULTS = {
+    "allow_scrape": False,
+    "allow_pdf_scan": False,
+}
+
+
+def get_allow_scrape() -> bool:
+    return _parse_bool(get("features", "allow_scrape", ""), FEATURES_DEFAULTS["allow_scrape"])
+
+
+def get_allow_pdf_scan() -> bool:
+    return _parse_bool(get("features", "allow_pdf_scan", ""), FEATURES_DEFAULTS["allow_pdf_scan"])

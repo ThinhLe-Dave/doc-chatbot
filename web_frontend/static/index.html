@@ -111,6 +111,24 @@ button[type="submit"]:disabled { background: #ccc; cursor: not-allowed; }
 </div>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
+async function loadFeatures() {
+    try {
+        const res = await fetch('/api/features');
+        const data = await res.json();
+        if (!data.allow_scrape) {
+            document.querySelectorAll('[data-panel="scrape-panel"]').forEach(el => el.remove());
+            document.querySelectorAll('#scrape-panel').forEach(el => el.remove());
+        }
+        if (!data.allow_pdf_scan) {
+            document.querySelectorAll('[data-panel="pdf-panel"]').forEach(el => el.remove());
+            document.querySelectorAll('#pdf-panel').forEach(el => el.remove());
+        }
+    } catch (err) {
+        console.error('Failed to load features:', err);
+    }
+}
+loadFeatures();
+
 const tabs = document.querySelectorAll('.tab');
 const panels = document.querySelectorAll('.panel');
 tabs.forEach(tab => {

@@ -30,7 +30,7 @@ def _extract_short_ref(meta: dict, location: str) -> str:
     if page:
         return f"Page {page}"
     return ""
-from utils.config import get_cors_allowed_origins, get_cors_allow_credentials
+from utils.config import get_cors_allowed_origins, get_cors_allow_credentials, get_allow_scrape, get_allow_pdf_scan
 
 app = FastAPI(title="Doc Chatbot", description="Semantic document search and chatbot interface")
 
@@ -109,6 +109,14 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/features")
+async def features():
+    return {
+        "allow_scrape": get_allow_scrape(),
+        "allow_pdf_scan": get_allow_pdf_scan(),
+    }
+
+
 @app.post("/api/search")
 async def search(request: Request):
     body = await request.json()
@@ -157,6 +165,8 @@ async def search(request: Request):
 
 @app.post("/api/scrape")
 async def scrape_endpoint(request: Request):
+    if not get_allow_scrape():
+        return JSONResponse({"error": "Scraping is disabled by administrator"}, status_code=403)
     body = await request.json()
     url = (body.get("url") or "").strip()
     if not url:
@@ -188,6 +198,8 @@ async def scrape_endpoint(request: Request):
 
 @app.post("/api/pdf-scan")
 async def pdf_scan_endpoint(request: Request):
+    if not get_allow_pdf_scan():
+        return JSONResponse({"error": "PDF scanning is disabled by administrator"}, status_code=403)
     body = await request.json()
     path = (body.get("path") or "").strip()
     if not path:
@@ -216,6 +228,8 @@ async def pdf_scan_endpoint(request: Request):
 
 @app.post("/api/pdf-scan-upload")
 async def pdf_scan_upload(file: UploadFile = File(...)):
+    if not get_allow_pdf_scan():
+        return JSONResponse({"error": "PDF scanning is disabled by administrator"}, status_code=403)
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         return JSONResponse({"error": "Uploaded file must be a PDF"}, status_code=400)
 

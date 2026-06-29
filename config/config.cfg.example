@@ -38,6 +38,13 @@ name = docchatbot
 user = docuser
 # password = your_password_here
 
+[features]
+# Control what end-users can do with outside documents
+# allow_scrape: Allow end-users to scrape websites (default: false)
+allow_scrape = false
+# allow_pdf_scan: Allow end-users to scan PDF files (default: false)
+allow_pdf_scan = false
+
 [generator]
 # Generator configuration for RAG (Retrieval-Augmented Generation)
 # Provider: hf_api, local, openai
