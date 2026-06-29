@@ -251,13 +251,10 @@ def _resolve_chunk_store():
     from pathlib import Path
     db_config = DatabaseConfig.from_config_file()
     if db_config.is_configured():
-        try:
-            debug("loading from PostgresVectorStore", "db.store")
-            store = PostgresVectorStore(config=db_config)
-            store.load()
-            return store, "postgres"
-        except Exception as exc:
-            debug(f"Postgres load failed, falling back to file: {exc}", "db.store")
+        debug("loading from PostgresVectorStore", "db.store")
+        store = PostgresVectorStore(config=db_config)
+        store.load()
+        return store, "postgres"
     
     chunk_file = Path(__file__).resolve().parent.parent / "database" / "pdf_data_chunks.json"
     if chunk_file.exists():
