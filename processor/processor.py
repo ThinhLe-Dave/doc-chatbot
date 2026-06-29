@@ -10,6 +10,7 @@ from embedding.embedding import embed_texts, get_embedding_model
 from utils.logging import debug, error
 from vector_store.db_store import PostgresVectorStore, PostgresVectorStoreError
 from vector_store.db_config import DatabaseConfig
+from vector_store.store import VectorStore
 from utils.db_utils import SQL_GET_CHUNKS_BY_IDS, SQL_GET_CHUNK_CONTENT
 from utils.config import (
     get_search_top_k,
@@ -99,7 +100,6 @@ def _expand_candidate_chunks(
 
     expanded = set(candidate_ids)
     try:
-        store.load()
         with store._conn.cursor() as cur:
             cur.execute(
                 SQL_GET_CHUNKS_BY_IDS,
@@ -132,6 +132,53 @@ def _expand_candidate_chunks(
         expanded.update(neighbor_ids)
 
     return expanded
+
+
+def _expand_candidate_chunks_file(
+    chunk_ids_list: List[str],
+    store: VectorStore,
+) -> Set[str]:
+    expanded = set(chunk_ids_list)
+    try:
+        chunk_ids_map = {cid: i for i, cid in enumerate(store._chunk_ids)}
+        chunks_by_doc: Dict[str, List[Tuple[Any, str]]] = {}
+        
+        for cid in chunk_ids_list:
+            idx = chunk_ids_map.get(cid)
+            if idx is not None:
+                doc_id = store._chunk_ids[idx].split("/")[0] if "/" in store._chunk_ids[idx] else store._chunk_ids[idx]
+                ordering = (idx, cid)
+                chunks_by_doc.setdefault(doc_id, []).append((ordering, cid))
+        
+        neighbor_ids: List[str] = []
+        for items in chunks_by_doc.values():
+            items.sort()
+            ids = [cid for _, cid in items]
+            for position, cid in enumerate(ids):
+                start = max(0, position - _CONTEXT_WINDOW)
+                end = min(len(ids), position + _CONTEXT_WINDOW + 1)
+                neighbor_ids.extend(ids[start:end])
+        
+        if neighbor_ids:
+            expanded.update(neighbor_ids)
+    except Exception as exc:
+        debug(f"context expansion failed: {exc}", "processor")
+    return expanded
+
+
+def _get_chunks_by_ids_file(
+    chunk_ids: Set[str],
+    store: VectorStore,
+) -> List["Chunk"]:
+    result: List["Chunk"] = []
+    try:
+        from chunker.chunker import load_chunks_from_json
+        for chunk in load_chunks_from_json(str(Path(__file__).resolve().parent.parent / "database" / "pdf_data_chunks.json")):
+            if chunk.id in chunk_ids:
+                result.append(chunk)
+    except Exception as exc:
+        debug(f"file chunk load failed: {exc}", "processor")
+    return result
 
 
 def _truncate_preview(text: str, max_len: int = 220) -> str:
@@ -202,12 +249,19 @@ def display_results(results: List[dict], as_json: bool = False) -> None:
 
 def _resolve_chunk_store():
     db_config = DatabaseConfig.from_config_file()
-    if not db_config.is_configured():
-        raise PostgresVectorStoreError("Database not configured. Add [database] section to config.cfg")
-    debug("loading from PostgresVectorStore", "db.store")
-    store = PostgresVectorStore(config=db_config)
-    store.load()
-    return store
+    if db_config.is_configured():
+        debug("loading from PostgresVectorStore", "db.store")
+        store = PostgresVectorStore(config=db_config)
+        store.load()
+        return store, "postgres"
+    from pathlib import Path
+    chunk_file = Path(__file__).resolve().parent.parent / "database" / "pdf_data_chunks.json"
+    if chunk_file.exists():
+        debug("loading from file-based VectorStore", "db.store")
+        store = VectorStore(str(chunk_file))
+        store.load()
+        return store, "file"
+    raise PostgresVectorStoreError("No database or embedding cache available")
 
 
 def _encode_query(query: str) -> np.ndarray:
@@ -216,14 +270,18 @@ def _encode_query(query: str) -> np.ndarray:
 
 
 def _search_and_score(
-    store: PostgresVectorStore,
+    store,
     query_embedding: np.ndarray,
     top_k: int,
     min_score: float,
     categories: Optional[List[str]],
+    store_type: str = "postgres",
 ) -> tuple:
     top_k_chunks = min(max(top_k * 24, top_k), store.chunk_count)
-    search_results = store.search(query_embedding, top_k=top_k_chunks, min_score=0.0, categories=categories)
+    if store_type == "file":
+        search_results = store.search(query_embedding, top_k=top_k_chunks, min_score=0.0)
+    else:
+        search_results = store.search(query_embedding, top_k=top_k_chunks, min_score=0.0, categories=categories)
 
     chunk_ids = {r.chunk_id for r in search_results}
     scores = {r.chunk_id: r.score for r in search_results}
@@ -241,6 +299,8 @@ def _rank_results(
     chunk_k: int,
     top_k: int,
     categories: Optional[List[str]],
+    store=None,
+    store_type: str = "postgres",
 ) -> List[dict]:
     query_terms = _extract_query_terms(query)
     debug(f"query_terms={sorted(query_terms)} hybrid={hybrid} hybrid_weight={hybrid_weight}", "processor")
@@ -253,13 +313,63 @@ def _rank_results(
     else:
         keyword_scores = {}
 
-    db_config = DatabaseConfig.from_config_file()
-    store = PostgresVectorStore(config=db_config)
-    try:
+    original_ids = set(candidate_ids)
+    
+    if store_type == "file":
+        expanded_candidate_ids = _expand_candidate_chunks_file(list(candidate_ids), store)
+        chunks = _get_chunks_by_ids_file(expanded_candidate_ids, store)
+        for chunk in chunks:
+            chunk_meta_categories = [str(c).lower() for c in (chunk.metadata.get("categories") or [])]
+            if normalized_categories and not normalized_categories.intersection(chunk_meta_categories):
+                continue
+
+            score_value = scores.get(chunk.id, 0.0)
+            if hybrid and chunk.id in keyword_scores:
+                score_value = (1.0 - hybrid_weight) * score_value + hybrid_weight * keyword_scores[chunk.id]
+
+            if chunk.id in original_ids and score_value < min_score:
+                continue
+
+            document_id = chunk.document_id
+            entry = document_chunks.get(document_id)
+
+            if entry is None:
+                entry = _build_document_entry(
+                    chunk_id=chunk.id,
+                    document_id=chunk.document_id,
+                    content=chunk.content,
+                    path=chunk.path,
+                    metadata=chunk.metadata,
+                    score_value=score_value,
+                    chunk_k=chunk_k,
+                )
+                document_chunks[document_id] = entry
+            else:
+                entry["chunks"].append((score_value, chunk.content))
+                if score_value > entry["score"]:
+                    entry["score"] = score_value
+                    entry["best_chunk"] = chunk.content
+                    meta = chunk.metadata or {}
+                    entry["title"] = meta.get("title", entry.get("title", ""))
+                    entry["source"] = meta.get("source", entry.get("source", ""))
+                    entry["book"] = meta.get("book", entry.get("book"))
+                    entry["chapter"] = meta.get("chapter", entry.get("chapter"))
+                    entry["verse"] = meta.get("verse", entry.get("verse"))
+                    entry["section"] = meta.get("section", entry.get("section"))
+                    entry["path"] = chunk.path or entry.get("path", [])
+                    entry["location"] = {
+                        k: v
+                        for k, v in {
+                            "book": entry.get("book"),
+                            "chapter": entry.get("chapter"),
+                            "verse": entry.get("verse"),
+                            "section": entry.get("section"),
+                        }.items()
+                        if v
+                    }
+    else:
         store.load()
-        original_ids = set(candidate_ids)
         expanded_candidate_ids = _expand_candidate_chunks(store, original_ids)
-        expanded_ids = expanded_candidate_ids - original_ids
         with store._conn.cursor() as cur:
             cur.execute(
                 SQL_GET_CHUNKS_BY_IDS,
@@ -322,7 +432,6 @@ def _rank_results(
                             }.items()
                             if v
                         }
-    finally:
         store.close()
 
     for doc in document_chunks.values():
@@ -355,21 +464,17 @@ def recommend_documents(
     hybrid_weight = hybrid_weight if hybrid_weight is not None else get_search_hybrid_weight()
     hybrid_weight = max(0.0, min(1.0, hybrid_weight))
 
-    db_config = DatabaseConfig.from_config_file()
-    if not db_config.is_configured():
-        raise PostgresVectorStoreError("Database not configured. Add [database] section to config.cfg")
-
     debug(f"recommend query={query!r} top_k={top_k} chunk_k={chunk_k} min_score={min_score} hybrid={hybrid} categories={categories}", "processor")
 
-    store = _resolve_chunk_store()
+    store, store_type = _resolve_chunk_store()
     if store.chunk_count == 0:
         raise ValueError("Could not load any chunks from the database.")
 
     query_embedding = _encode_query(query)
-    candidate_ids, scores = _search_and_score(store, query_embedding, top_k, min_score, categories)
+    candidate_ids, scores = _search_and_score(store, query_embedding, top_k, min_score, categories, store_type)
 
     return _rank_results(
-        candidate_ids, scores, query, hybrid, hybrid_weight, min_score, chunk_k, top_k, categories
+        candidate_ids, scores, query, hybrid, hybrid_weight, min_score, chunk_k, top_k, categories, store, store_type
     )
 
 
@@ -393,25 +498,43 @@ def _compute_keyword_scores(chunk_ids: set, query_terms: set) -> dict:
     if not query_terms:
         return keyword_scores
 
-    db_config = DatabaseConfig.from_config_file()
-    if db_config.is_configured():
-        store = PostgresVectorStore(config=db_config)
+    from pathlib import Path
+    chunk_file = Path(__file__).resolve().parent.parent / "database" / "pdf_data_chunks.json"
+    if chunk_file.exists():
         try:
-            store.load()
-            with store._conn.cursor() as cur:
-                for chunk_id in chunk_ids:
-                    cur.execute(SQL_GET_CHUNK_CONTENT, (chunk_id,))
-                    row = cur.fetchone()
-                    if row:
-                        normalized_text = _normalize_ocr(row[0].lower())
-                        matched = sum(
-                            1
-                            for term in query_terms
-                            if re.search(rf"\b{re.escape(term)}\b", normalized_text)
-                        )
-                        keyword_scores[chunk_id] = matched / len(query_terms)
-        finally:
-            store.close()
+            from chunker.chunker import load_chunks_from_json
+            for chunk in load_chunks_from_json(str(chunk_file)):
+                if chunk.id in chunk_ids:
+                    text = (chunk.content + " " + (chunk.metadata.get("title") or "")).lower()
+                    normalized_text = _normalize_ocr(text)
+                    matched = sum(
+                        1
+                        for term in query_terms
+                        if re.search(rf"\b{re.escape(term)}\b", normalized_text)
+                    )
+                    keyword_scores[chunk.id] = matched / len(query_terms)
+        except Exception as exc:
+            debug(f"keyword score file load failed: {exc}", "processor")
+    else:
+        db_config = DatabaseConfig.from_config_file()
+        if db_config.is_configured():
+            store = PostgresVectorStore(config=db_config)
+            try:
+                store.load()
+                with store._conn.cursor() as cur:
+                    for chunk_id in chunk_ids:
+                        cur.execute(SQL_GET_CHUNK_CONTENT, (chunk_id,))
+                        row = cur.fetchone()
+                        if row:
+                            normalized_text = _normalize_ocr(row[0].lower())
+                            matched = sum(
+                                1
+                                for term in query_terms
+                                if re.search(rf"\b{re.escape(term)}\b", normalized_text)
+                            )
+                            keyword_scores[chunk_id] = matched / len(query_terms)
+            finally:
+                store.close()
     return keyword_scores
 
 
