@@ -112,26 +112,26 @@ DATABASE_DEFAULTS = {
 
 
 def get_db_host() -> str:
-    return get("database", "host") or os.environ.get("DB_HOST") or DATABASE_DEFAULTS["host"]
+    return get("database", "host") or os.environ.get("PGHOST") or os.environ.get("DB_HOST") or DATABASE_DEFAULTS["host"]
 
 
 def get_db_port() -> int:
     try:
-        return int(get("database", "port") or os.environ.get("DB_PORT") or str(DATABASE_DEFAULTS["port"]))
+        return int(get("database", "port") or os.environ.get("PGPORT") or os.environ.get("DB_PORT") or str(DATABASE_DEFAULTS["port"]))
     except ValueError:
         return DATABASE_DEFAULTS["port"]
 
 
 def get_db_name() -> str:
-    return get("database", "name") or os.environ.get("DB_NAME") or DATABASE_DEFAULTS["name"]
+    return get("database", "name") or os.environ.get("PGDATABASE") or os.environ.get("DB_NAME") or DATABASE_DEFAULTS["name"]
 
 
 def get_db_user() -> str:
-    return get("database", "user") or os.environ.get("DB_USER") or DATABASE_DEFAULTS["user"]
+    return get("database", "user") or os.environ.get("PGUSER") or os.environ.get("DB_USER") or DATABASE_DEFAULTS["user"]
 
 
 def get_db_password() -> str:
-    return get("database", "password") or os.environ.get("DB_PASSWORD") or DATABASE_DEFAULTS["password"]
+    return get("database", "password") or os.environ.get("PGPASSWORD") or os.environ.get("DB_PASSWORD") or DATABASE_DEFAULTS["password"]
 
 
 def get_db_url() -> Optional[str]:
