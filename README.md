@@ -1,3 +1,12 @@
+---
+title: Doc Chatbot
+emoji: 🤖
+colorFrom: blue
+colorTo: purple
+sdk: docker
+pinned: false
+---
+
 # Doc Chatbot
 
 A lightweight document search and chatbot-style retrieval system. This repository supports:
