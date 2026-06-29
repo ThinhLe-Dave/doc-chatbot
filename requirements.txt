@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
+python-multipart
 typer[rich]
 sentence-transformers
 numpy
