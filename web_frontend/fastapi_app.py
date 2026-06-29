@@ -43,10 +43,12 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory="web_frontend/static"), name="static")
-app.mount("/pdfs", StaticFiles(directory="pdfs"), name="pdfs")
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "doc_chatbot_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+_pdf_dir = Path(__file__).parent.parent / "pdfs"
+if _pdf_dir.exists():
+    app.mount("/pdfs", StaticFiles(directory=str(_pdf_dir)), name="pdfs")
 _jobs: dict = {}
 _running_tasks: set = set()
 
