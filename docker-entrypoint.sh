@@ -4,6 +4,7 @@ set -e
 # Initialize PostgreSQL database for Hugging Face Spaces (only if DATABASE_URL is set)
 if [ -n "$DATABASE_URL" ]; then
     python3 -c "
+import sys
 from vector_store.db_config import DatabaseConfig
 from utils.db_utils import SQL_CREATE_DOCUMENTS_TABLE, SQL_CREATE_CHUNKS_TABLE, SQL_CREATE_EMBEDDINGS_TABLE_TEMPLATE
 import psycopg
@@ -21,7 +22,7 @@ try:
     print('Database initialized successfully')
 except Exception as e:
     print(f'Database init failed: {e}')
-    exit 1
+    sys.exit(1)
 "
 fi
 
