@@ -28,6 +28,8 @@ from datacollector.pdf_scanner import (
 
 class MockPage:
     def get_text(self, mode="text"):
+        if mode == "blocks":
+            return [(0, 0, 100, 10, "This is test content from page. " * 10, 0, 0)]
         return "This is test content from page. " * 10
 
 
@@ -37,11 +39,16 @@ class MockChapterPage:
         self.has_chapter = has_chapter
 
     def get_text(self, mode="text"):
+        text = ""
         if self.has_chapter == "Chapter 1":
-            return f"Chapter 1 Content on page {self.page_num}."
+            text = f"Chapter 1 Content on page {self.page_num}."
         elif self.has_chapter == "Chapter 2":
-            return f"Chapter 2 Content on page {self.page_num}."
-        return f"Regular content on page {self.page_num}."
+            text = f"Chapter 2 Content on page {self.page_num}."
+        else:
+            text = f"Regular content on page {self.page_num}."
+        if mode == "blocks":
+            return [(0, 0, 100, 10, text, 0, 0)]
+        return text
 
 
 class MockFitZDocument:

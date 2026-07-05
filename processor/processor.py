@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import json
 import re
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Set, Tuple, Union
 
@@ -23,6 +26,20 @@ from utils.config import (
 
 _NUMERIC_TAIL_RE = re.compile(r"/(\d+)$")
 _CONTEXT_WINDOW = 3
+_CHAPTER_ID_PREFIX = "chapter:"
+_SOURCE_PAGE_RE = re.compile(r"#page=\d+$", re.IGNORECASE)
+_TITLE_PAGE_RE = re.compile(r"\s*\(page\s*\d+\)$", re.IGNORECASE)
+
+
+def _build_chapter_id(meta: dict) -> Optional[str]:
+    book = meta.get("book")
+    chapter = meta.get("chapter")
+    if not book or not chapter:
+        return None
+    source_hash = meta.get("source_hash") or ""
+    source = _SOURCE_PAGE_RE.sub('', meta.get("source") or "")
+    payload = json.dumps({"h": source_hash, "s": source, "b": book, "c": chapter}).encode()
+    return _CHAPTER_ID_PREFIX + base64.urlsafe_b64encode(payload).decode()
 
 
 def _get_document_id_for_row(row: Tuple[Any, ...]) -> Optional[str]:
@@ -63,14 +80,28 @@ def _get_ordering_key(row: Tuple[Any, ...]) -> Tuple[Any, ...]:
         return (float("inf"), chunk_id)
 
     meta = metadata
+    page = meta.get("page")
     chunk_index = meta.get("chunk_index")
+
+    if page is not None:
+        try:
+            page_int = int(page)
+            if chunk_index is not None:
+                try:
+                    return (page_int, int(chunk_index), chunk_id)
+                except (TypeError, ValueError):
+                    pass
+            return (page_int, chunk_id)
+        except (TypeError, ValueError):
+            pass
+
     if chunk_index is not None:
         try:
             return (int(chunk_index), chunk_id)
         except (TypeError, ValueError):
             pass
 
-    for key in ("page", "verse", "section"):
+    for key in ("verse", "section"):
         value = meta.get(key)
         if value is not None:
             try:
@@ -331,13 +362,14 @@ def _rank_results(
             if chunk.id in original_ids and score_value < min_score:
                 continue
 
-            document_id = chunk.document_id
+            meta = chunk.metadata or {}
+            document_id = _build_chapter_id(meta) or chunk.document_id
             entry = document_chunks.get(document_id)
 
             if entry is None:
                 entry = _build_document_entry(
                     chunk_id=chunk.id,
-                    document_id=chunk.document_id,
+                    document_id=document_id,
                     content=chunk.content,
                     path=chunk.path,
                     metadata=chunk.metadata,
@@ -396,13 +428,14 @@ def _rank_results(
                 if chunk.id in original_ids and score_value < min_score:
                     continue
 
-                document_id = chunk.document_id
+                meta = chunk.metadata or {}
+                document_id = _build_chapter_id(meta) or chunk.document_id
                 entry = document_chunks.get(document_id)
 
                 if entry is None:
                     entry = _build_document_entry(
                         chunk_id=chunk.id,
-                        document_id=chunk.document_id,
+                        document_id=document_id,
                         content=chunk.content,
                         path=chunk.path,
                         metadata=chunk.metadata,
@@ -442,6 +475,14 @@ def _rank_results(
         if doc["chunks"]:
             doc["score"] = max(item.get("score", 0) for item in doc["chunks"])
             doc["best_chunk"] = clean_content(doc["chunks"][0].get("text", ""))
+
+        if doc.get("id", "").startswith(_CHAPTER_ID_PREFIX):
+            source = doc.get("source", "")
+            if source:
+                doc["source"] = _SOURCE_PAGE_RE.sub('', source)
+            title = doc.get("title", "")
+            if title:
+                doc["title"] = _TITLE_PAGE_RE.sub('', title).strip()
 
     results = sorted(document_chunks.values(), key=lambda item: item["score"], reverse=True)
     final = [item for item in results if item["score"] >= min_score][:top_k]

@@ -22,9 +22,65 @@ _CHUNK_PREVIEW_MAX_PAGES = 50
 
 def _extract_text_from_page(page) -> str:
     try:
-        return page.get_text("text") or ""
+        raw_blocks = page.get_text("blocks")
     except Exception:
-        return ""
+        raw_blocks = None
+    
+    if isinstance(raw_blocks, list) and raw_blocks:
+        try:
+            text_blocks = []
+            coords = []
+            for b in raw_blocks:
+                if not isinstance(b, (list, tuple)) or len(b) <= 4:
+                    continue
+                text = b[4]
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                text_blocks.append(text.strip())
+                coords.append((b[0], b[2]))
+            if text_blocks:
+                centers = [(x0 + x1) / 2 for x0, x1 in coords]
+                if len(centers) > 1:
+                    xs = sorted(set(int(c) for c in centers))
+                    if len(xs) > 1:
+                        gaps = [xs[i+1] - xs[i] for i in range(len(xs)-1)]
+                        median_gap = sorted(gaps)[len(gaps)//2] if gaps else 0
+                    else:
+                        median_gap = 0
+                    columns = []
+                    current = [(centers[0], raw_blocks[0][1], text_blocks[0])]
+                    current_center = centers[0]
+                    for i in range(1, len(text_blocks)):
+                        b_center = centers[i]
+                        if abs(b_center - current_center) <= max(median_gap * 2, 50):
+                            current.append((b_center, raw_blocks[i][1], text_blocks[i]))
+                        else:
+                            current.sort(key=lambda x: x[1])
+                            columns.append(current)
+                            current = [(b_center, raw_blocks[i][1], text_blocks[i])]
+                            current_center = b_center
+                    current.sort(key=lambda x: x[1])
+                    columns.append(current)
+                    columns.sort(key=lambda col: col[0][0])
+                    parts = []
+                    seen = set()
+                    for col in columns:
+                        for _, _, t in col:
+                            if t not in seen:
+                                seen.add(t)
+                                parts.append(t)
+                    return "\n".join(parts)
+                return "\n".join(text_blocks)
+        except Exception:
+            pass
+    
+    try:
+        text = page.get_text("text") or ""
+        if text:
+            return text
+    except Exception:
+        pass
+    return ""
 
 
 def _parse_page_ranges(page_range: Optional[str], total_pages: int) -> Optional[set]:
@@ -180,9 +236,10 @@ def _build_page_metadata(
     extraction_method: str,
     document_hash: str,
     text: str,
+    fallback_chapter: Optional[str] = None,
 ) -> dict:
     page_hash = compute_content_hash(text)
-    chapter = _extract_chapter_info(text)
+    chapter = _extract_chapter_info(text) or fallback_chapter
     info("building metadata")
     return {
         "page": page_num,
@@ -274,6 +331,7 @@ class PDFScanner(DataCollector):
         pre_extracted = _pre_extract_pages(reader, allowed_pages)
 
         self.documents = []
+        last_chapter = None
         for page_num in range(total_pages):
             try:
                 actual_page_num = page_num + 1
@@ -290,8 +348,11 @@ class PDFScanner(DataCollector):
                 text = raw_text
                 if text and text.strip():
                     metadata = _build_page_metadata(
-                        title, actual_page_num, total_pages, extraction_method, document_hash, text
+                        title, actual_page_num, total_pages, extraction_method, document_hash, text,
+                        fallback_chapter=last_chapter,
                     )
+                    if metadata.get("chapter"):
+                        last_chapter = metadata["chapter"]
                     document = _create_page_document(
                         base_source, title, actual_page_num, text, metadata
                     )

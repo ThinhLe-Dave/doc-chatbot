@@ -4,10 +4,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from typing import Optional, AsyncIterator
 import asyncio
+import base64
 import json
 import os
 import uuid
 import tempfile
+import re
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -19,7 +21,6 @@ def _extract_short_ref(meta: dict, location: str) -> str:
     chapter = meta.get("chapter")
     verse = meta.get("verse")
     section = meta.get("section")
-    page = meta.get("page")
     if chapter:
         ref = str(chapter)
         if verse:
@@ -27,8 +28,6 @@ def _extract_short_ref(meta: dict, location: str) -> str:
         return ref
     if section:
         return str(section)
-    if page:
-        return f"Page {page}"
     return ""
 from utils.config import get_cors_allowed_origins, get_cors_allow_credentials, get_allow_scrape, get_allow_pdf_scan
 
@@ -436,6 +435,10 @@ async def get_document(document_id: str):
     if not db_config.is_configured():
         return JSONResponse({"error": "Database not configured"}, status_code=500)
     
+    _CHAPTER_ID_PREFIX = "chapter:"
+    _SOURCE_PAGE_RE = re.compile(r"#page=\d+$", re.IGNORECASE)
+    _TITLE_PAGE_RE = re.compile(r"\s*\(page\s*\d+\)$", re.IGNORECASE)
+    
     try:
         store = PostgresVectorStore(config=db_config)
         store.load()
@@ -444,10 +447,49 @@ async def get_document(document_id: str):
             cur.execute("SELECT id, source, title, path, metadata FROM documents WHERE id = %s", (document_id,))
             doc_row = cur.fetchone()
             
+            chunk_query = "SELECT id, document_id, content, path, metadata FROM chunks WHERE document_id = %s ORDER BY id"
+            chunk_params = (document_id,)
+            
+            if not doc_row and document_id.startswith(_CHAPTER_ID_PREFIX):
+                try:
+                    payload = base64.urlsafe_b64decode(document_id[len(_CHAPTER_ID_PREFIX):])
+                    chapter_data = json.loads(payload)
+                except Exception:
+                    chapter_data = {}
+                else:
+                    source_hash = chapter_data.get("h", "")
+                    book = chapter_data.get("b", "")
+                    chapter = chapter_data.get("c", "")
+                    
+                    chunk_query = """
+                        SELECT id, document_id, content, path, metadata 
+                        FROM chunks 
+                        WHERE metadata->>'source_hash' = %s 
+                          AND metadata->>'book' = %s 
+                          AND metadata->>'chapter' = %s 
+                        ORDER BY (metadata->>'page')::int, id
+                    """
+                    chunk_params = (source_hash, book, chapter)
+                    
+                    cur.execute(chunk_query, chunk_params)
+                    chapter_rows = cur.fetchall()
+                    
+                    if chapter_rows:
+                        first_meta = chapter_rows[0][4] or {}
+                        synthetic_source = _SOURCE_PAGE_RE.sub('', first_meta.get("source") or "")
+                        synthetic_title = _TITLE_PAGE_RE.sub('', first_meta.get("title") or "").strip()
+                        doc_row = (
+                            document_id,
+                            synthetic_source,
+                            synthetic_title,
+                            [],
+                            first_meta,
+                        )
+            
             if not doc_row:
                 return JSONResponse({"error": "Document not found"}, status_code=404)
             
-            cur.execute("SELECT id, document_id, content, path, metadata FROM chunks WHERE document_id = %s ORDER BY id", (document_id,))
+            cur.execute(chunk_query, chunk_params)
             chunk_rows = cur.fetchall()
             
             def _make_location(meta):
@@ -455,7 +497,6 @@ async def get_document(document_id: str):
                 chapter = meta.get("chapter")
                 verse = meta.get("verse")
                 section = meta.get("section")
-                page = meta.get("page")
                 if book:
                     if chapter:
                         ref = f"{book} {chapter}"
@@ -464,11 +505,7 @@ async def get_document(document_id: str):
                         return ref
                     if section:
                         return f"{book} {section}"
-                    if page:
-                        return f"{book} Page {page}"
                     return book
-                if page:
-                    return f"Page {page}"
                 if section:
                     return section
                 return ""

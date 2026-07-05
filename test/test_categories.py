@@ -6,7 +6,7 @@ sys.path.insert(0, sys.path[0] + "/..")
 
 
 class CategoryExtractionTest(unittest.TestCase):
-    def test_build_categories_includes_page_number(self):
+    def test_build_categories_excludes_page_number(self):
         from chunker.chunker import Chunker
         
         chunker = Chunker()
@@ -14,7 +14,7 @@ class CategoryExtractionTest(unittest.TestCase):
         categories = chunker._build_categories(metadata, "test content")
         
         self.assertIn("GDPR", categories)
-        self.assertIn("Page 57", categories)
+        self.assertNotIn("Page 57", categories)
         
     def test_build_categories_prioritizes_structural(self):
         from chunker.chunker import Chunker
