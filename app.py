@@ -22,6 +22,9 @@ from utils.config import (
     get_search_min_score,
     get_search_hybrid,
     get_search_hybrid_weight,
+    get_graph_enabled,
+    get_graph_semantic_threshold,
+    get_graph_community_resolution,
 )
 from utils.logging import debug
 
@@ -97,20 +100,20 @@ def search(
     display_results(results, json_output)
 
 
-def build_chunk_cache(input_file: str, chunk_file: str):
+def build_chunk_cache(input_file: str, chunk_file: str, graph_mode: bool = False):
     from chunker.document import load_documents_from_json
     from chunker.chunker import write_chunks_to_file
     from embedding.embedding import get_embedding_model
     from vector_store.store import VectorStore
 
     documents = load_documents_from_json(input_file)
-    write_chunks_to_file(documents, chunk_file)
+    write_chunks_to_file(documents, chunk_file, graph_mode=graph_mode)
     store = VectorStore(chunk_file)
     model = get_embedding_model()
     return store.build(model)
 
 
-def scrape_website(url: str, limit: int = 10000, sitemap_first: bool = False, force: bool = False, no_robots: bool = False) -> dict:
+def scrape_website(url: str, limit: int = 10000, sitemap_first: bool = False, force: bool = False, no_robots: bool = False, graph_mode: bool = False) -> dict:
     url = url.strip()
     if not url:
         raise ValueError("No URL provided")
@@ -125,7 +128,6 @@ def scrape_website(url: str, limit: int = 10000, sitemap_first: bool = False, fo
     model = get_embedding_model()
     store = PostgresVectorStore(config=db_config)
     store.load()
-    conn = store._conn
 
     total_chunks = 0
     seen_docs = set()
@@ -137,22 +139,30 @@ def scrape_website(url: str, limit: int = 10000, sitemap_first: bool = False, fo
         doc_path = _build_doc_path(doc)
         if doc.id not in seen_docs:
             seen_docs.add(doc.id)
+            conn = store._get_connection()
             with conn.cursor() as cur:
                 insert_document(cur, doc.id, doc.source, doc.title, doc_path, doc.metadata)
 
-        for chunk in chunker.create_chunks_from_document(doc):
+        if graph_mode:
+            chunks = chunker.create_graph_chunks(doc)[0]
+        else:
+            chunks = chunker.create_chunks_from_document(doc)
+        for chunk in chunks:
             batch_chunks.append(chunk)
             if len(batch_chunks) >= 64:
+                conn = store._get_connection()
                 store_chunk_batch(conn, batch_chunks, model)
                 total_chunks += len(batch_chunks)
                 conn.commit()
                 batch_chunks = []
 
     if batch_chunks:
+        conn = store._get_connection()
         store_chunk_batch(conn, batch_chunks, model)
         total_chunks += len(batch_chunks)
 
-    conn.commit()
+    if conn:
+        conn.commit()
     store.close()
     return {
         "total_chunks": total_chunks,
@@ -160,7 +170,7 @@ def scrape_website(url: str, limit: int = 10000, sitemap_first: bool = False, fo
     }
 
 
-def scan_pdf(path: str, chapters: Optional[List[str]] = None) -> dict:
+def scan_pdf(path: str, chapters: Optional[List[str]] = None, graph_mode: bool = False) -> dict:
     debug("Starting PDF scan...", category="app")
     if not os.path.exists(path) or not path.lower().endswith(".pdf"):
         raise ValueError(f"Invalid PDF path: {path}")
@@ -172,32 +182,40 @@ def scan_pdf(path: str, chapters: Optional[List[str]] = None) -> dict:
     model = get_embedding_model()
     store = PostgresVectorStore(config=db_config)
     store.load()
-    conn = store._conn
 
     total_chunks = 0
     seen_docs = set()
     batch_chunks = []
-
     chunker = Chunker()
+
     for doc in documents:
         doc_path = _build_doc_path(doc)
         if doc.id not in seen_docs:
             seen_docs.add(doc.id)
+            conn = store._get_connection()
             with conn.cursor() as cur:
                 insert_document(cur, doc.id, doc.source, doc.title, doc_path, doc.metadata)
-        for chunk in chunker.create_chunks_from_document(doc):
+
+        if graph_mode:
+            chunks = chunker.create_graph_chunks(doc)[0]
+        else:
+            chunks = chunker.create_chunks_from_document(doc)
+        for chunk in chunks:
             batch_chunks.append(chunk)
             if len(batch_chunks) >= 64:
+                conn = store._get_connection()
                 store_chunk_batch(conn, batch_chunks, model)
                 total_chunks += len(batch_chunks)
                 conn.commit()
                 batch_chunks = []
 
     if batch_chunks:
+        conn = store._get_connection()
         store_chunk_batch(conn, batch_chunks, model)
         total_chunks += len(batch_chunks)
 
-    conn.commit()
+    if conn:
+        conn.commit()
     store.close()
     return {
         "total_chunks": total_chunks,
@@ -212,6 +230,7 @@ def scrape(
     sitemap_first: bool = typer.Option(False, "--sitemap-first", help="Discover URLs from sitemap before link crawling"),
     force: bool = typer.Option(False, "--force", help="Force reprocess even if HTTP validators indicate unchanged content"),
     no_robots: bool = typer.Option(False, "--no-robots", help="Ignore robots.txt rules"),
+    graph_mode: bool = typer.Option(False, "--graph", help="Enable graph-aware chunking"),
 ):
     """
     **Document Chatbot Data Scraper**
@@ -225,7 +244,7 @@ def scrape(
 
     typer.echo(f"Starting crawl on: {url}...")
 
-    result = scrape_website(url, limit, sitemap_first, force, no_robots)
+    result = scrape_website(url, limit, sitemap_first, force, no_robots, graph_mode)
 
     typer.echo(f"Discovery metrics - discovered: {result.get('pages_scraped', 0)}, fetched: {result.get('pages_scraped', 0)}, skipped: 0, failed: 0")
     typer.echo(f"Scraping completed. {result['total_chunks']} chunks saved to database.")
@@ -236,6 +255,7 @@ def pdf_scan(
     path: Annotated[Optional[str], typer.Argument(help="Path to PDF file")] = None,
     force: Annotated[bool, typer.Option("--force", help="Force reprocess even if unchanged pages are detected")] = False,
     chapters: Annotated[Optional[List[str]], typer.Option("--chapter", "-c", help="Filter by chapter/section (repeatable)")] = None,
+    graph_mode: Annotated[bool, typer.Option("--graph", help="Enable graph-aware chunking")] = False,
 ):
     """
     **PDF Scanner**
@@ -252,7 +272,7 @@ def pdf_scan(
         typer.secho(f"Error: Invalid PDF path: {path}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
 
-    result = scan_pdf(path, chapters)
+    result = scan_pdf(path, chapters, graph_mode)
     typer.echo(f"PDF scan completed. {result['total_chunks']} chunks saved to database.")
 
 
@@ -274,9 +294,10 @@ def clear_db(
     store = PostgresVectorStore(config=db_config)
     try:
         store.load()
-        with store._conn.cursor() as cur:
+        conn = store._get_connection()
+        with conn.cursor() as cur:
             drop_tables(cur)
-        store._conn.commit()
+        conn.commit()
         typer.secho("Database cleared successfully.", fg=typer.colors.GREEN)
     except Exception as e:
         typer.secho(f"Error clearing database: {e}", fg=typer.colors.RED, err=True)

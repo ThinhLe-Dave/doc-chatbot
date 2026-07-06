@@ -447,7 +447,7 @@ async def get_document(document_id: str):
         store = PostgresVectorStore(config=db_config)
         store.load()
         
-        with store._conn.cursor() as cur:
+        with store._get_connection().cursor() as cur:
             doc_row = get_document_by_id(cur, document_id)
             chapter_rows = []
             

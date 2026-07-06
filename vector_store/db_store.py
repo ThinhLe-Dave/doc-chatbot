@@ -40,14 +40,26 @@ class PostgresVectorStore:
     def _get_connection(self):
         """Get or create database connection."""
         if self._conn is None:
+            self._connect()
+        else:
             try:
-                import psycopg
-                self._conn = psycopg.connect(self.config.get_connection_string())
-            except ImportError:
-                raise PostgresVectorStoreError(
-                    "psycopg not installed. Run: pip install psycopg[binary,pool]"
-                )
+                with self._conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+            except Exception:
+                debug("Connection stale, reconnecting...", "db.store")
+                self._conn.close()
+                self._connect()
         return self._conn
+
+    def _connect(self) -> None:
+        """Create a new database connection."""
+        try:
+            import psycopg
+            self._conn = psycopg.connect(self.config.get_connection_string())
+        except ImportError:
+            raise PostgresVectorStoreError(
+                "psycopg not installed. Run: pip install psycopg[binary,pool]"
+            )
 
     def _ensure_tables(self) -> None:
         """Create tables if they don't exist."""
@@ -177,5 +189,8 @@ class PostgresVectorStore:
     def close(self) -> None:
         """Close database connection."""
         if self._conn:
-            self._conn.close()
+            try:
+                self._conn.close()
+            except Exception:
+                pass
             self._conn = None

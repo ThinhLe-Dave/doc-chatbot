@@ -135,7 +135,7 @@ def _expand_candidate_chunks(
 
     expanded = set(candidate_ids)
     try:
-        with store._conn.cursor() as cur:
+        with store._get_connection().cursor() as cur:
             rows = get_chunks_by_ids(cur, candidate_ids)
     except Exception as exc:
         debug(f"context expansion fetch failed: {exc}", "processor")
@@ -419,7 +419,7 @@ def _rank_results(
     else:
         store.load()
         expanded_candidate_ids = _expand_candidate_chunks(store, original_ids)
-        with store._conn.cursor() as cur:
+        with store._get_connection().cursor() as cur:
             rows = get_chunks_by_ids(cur, expanded_candidate_ids)
             for row in rows:
                 chunk = Chunk(
@@ -575,7 +575,7 @@ def _compute_keyword_scores(chunk_ids: set, query_terms: set) -> dict:
             store = PostgresVectorStore(config=db_config)
             try:
                 store.load()
-                with store._conn.cursor() as cur:
+                with store._get_connection().cursor() as cur:
                     for chunk_id in chunk_ids:
                         row = get_chunk_content(cur, chunk_id)
                         if row:
