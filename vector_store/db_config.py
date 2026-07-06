@@ -86,12 +86,9 @@ class DatabaseConfig:
         return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
 
     def is_configured(self) -> bool:
-        """Check if database connection is fully configured with valid remote URL."""
+        """Check if database connection is fully configured."""
         if self.url:
             return True
-        # Skip localhost connections - use file-based store instead
-        if self.host in ("localhost", "127.0.0.1"):
-            return False
         return bool(self.host and self.name and self.user)
 
 

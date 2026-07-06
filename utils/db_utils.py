@@ -29,6 +29,11 @@ SQL_CREATE_CHUNKS_TABLE = """
 """
 
 SQL_CREATE_EMBEDDINGS_TABLE_TEMPLATE = "CREATE TABLE IF NOT EXISTS embeddings (chunk_id TEXT PRIMARY KEY REFERENCES chunks(id), embedding VECTOR({dim}))"
+SQL_CREATE_EMBEDDINGS_INDEX = "CREATE INDEX IF NOT EXISTS embeddings_embedding_idx ON embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
+SQL_CREATE_CHUNKS_DOCUMENT_ID_INDEX = "CREATE INDEX IF NOT EXISTS chunks_document_id_idx ON chunks (document_id)"
+SQL_CREATE_CHUNKS_SOURCE_HASH_IDX = "CREATE INDEX IF NOT EXISTS chunks_metadata_source_hash_idx ON chunks ((metadata->>'source_hash'))"
+SQL_CREATE_CHUNKS_BOOK_IDX = "CREATE INDEX IF NOT EXISTS chunks_metadata_book_idx ON chunks ((metadata->>'book'))"
+SQL_CREATE_CHUNKS_CHAPTER_IDX = "CREATE INDEX IF NOT EXISTS chunks_metadata_chapter_idx ON chunks ((metadata->>'chapter'))"
 
 SQL_UPSERT_DOCUMENT = """
     INSERT INTO documents (id, source, title, path, metadata)
@@ -138,11 +143,16 @@ SQL_SEARCH_SIMILAR_WITH_CATEGORIES = """
 
 
 def create_tables(conn, embedding_dim: int) -> None:
-    """Create tables if they don't exist."""
+    """Create tables and indexes if they don't exist."""
     with conn.cursor() as cur:
         cur.execute(SQL_CREATE_DOCUMENTS_TABLE)
         cur.execute(SQL_CREATE_CHUNKS_TABLE)
         cur.execute(SQL_CREATE_EMBEDDINGS_TABLE_TEMPLATE.format(dim=embedding_dim))
+        cur.execute(SQL_CREATE_EMBEDDINGS_INDEX)
+        cur.execute(SQL_CREATE_CHUNKS_DOCUMENT_ID_INDEX)
+        cur.execute(SQL_CREATE_CHUNKS_SOURCE_HASH_IDX)
+        cur.execute(SQL_CREATE_CHUNKS_BOOK_IDX)
+        cur.execute(SQL_CREATE_CHUNKS_CHAPTER_IDX)
         conn.commit()
 
 

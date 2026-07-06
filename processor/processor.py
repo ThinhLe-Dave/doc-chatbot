@@ -15,6 +15,10 @@ from vector_store.db_store import PostgresVectorStore, PostgresVectorStoreError
 from vector_store.db_config import DatabaseConfig
 from vector_store.store import VectorStore
 from utils.db_utils import get_chunks_by_ids, get_chunk_content
+
+_CACHED_CHUNK_STORE: Optional[Union[PostgresVectorStore, VectorStore]] = None
+_CACHED_STORE_TYPE: Optional[str] = None
+_CACHED_STORE_KEY: Optional[str] = None
 from utils.config import (
     get_search_top_k,
     get_search_chunk_k,
@@ -275,19 +279,35 @@ def display_results(results: List[dict], as_json: bool = False) -> None:
 
 
 def _resolve_chunk_store():
+    global _CACHED_CHUNK_STORE, _CACHED_STORE_TYPE, _CACHED_STORE_KEY
+
     from pathlib import Path
     db_config = DatabaseConfig.from_config_file()
     if db_config.is_configured():
+        store_key = f"postgres:{db_config.get_connection_string()}"
+        if _CACHED_CHUNK_STORE is not None and _CACHED_STORE_KEY == store_key:
+            return _CACHED_CHUNK_STORE, _CACHED_STORE_TYPE
+
         debug("loading from PostgresVectorStore", "db.store")
         store = PostgresVectorStore(config=db_config)
         store.load()
+        _CACHED_CHUNK_STORE = store
+        _CACHED_STORE_TYPE = "postgres"
+        _CACHED_STORE_KEY = store_key
         return store, "postgres"
-    
+
     chunk_file = Path(__file__).resolve().parent.parent / "database" / "pdf_data_chunks.json"
+    store_key = f"file:{chunk_file}"
+    if _CACHED_CHUNK_STORE is not None and _CACHED_STORE_KEY == store_key:
+        return _CACHED_CHUNK_STORE, _CACHED_STORE_TYPE
+
     if chunk_file.exists():
         debug("loading from file-based VectorStore", "db.store")
         store = VectorStore(str(chunk_file))
         store.load()
+        _CACHED_CHUNK_STORE = store
+        _CACHED_STORE_TYPE = "file"
+        _CACHED_STORE_KEY = store_key
         return store, "file"
     raise PostgresVectorStoreError("No database or embedding cache available")
 
@@ -305,7 +325,7 @@ def _search_and_score(
     categories: Optional[List[str]],
     store_type: str = "postgres",
 ) -> tuple:
-    top_k_chunks = min(max(top_k * 24, top_k), store.chunk_count)
+    top_k_chunks = min(max(top_k * 12, top_k), store.chunk_count)
     if store_type == "file":
         search_results = store.search(query_embedding, top_k=top_k_chunks, min_score=0.0)
     else:
@@ -459,7 +479,6 @@ def _rank_results(
                             }.items()
                             if v
                         }
-        store.close()
 
     for doc in document_chunks.values():
         doc["chunks"] = deduplicate_chunks(doc["chunks"])

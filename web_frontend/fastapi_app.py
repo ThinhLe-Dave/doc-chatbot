@@ -449,6 +449,7 @@ async def get_document(document_id: str):
         
         with store._conn.cursor() as cur:
             doc_row = get_document_by_id(cur, document_id)
+            chapter_rows = []
             
             if not doc_row and document_id.startswith(_CHAPTER_ID_PREFIX):
                 try:
@@ -478,7 +479,10 @@ async def get_document(document_id: str):
             if not doc_row:
                 return JSONResponse({"error": "Document not found"}, status_code=404)
             
-            chunk_rows = get_chunks_for_document(cur, document_id)
+            if chapter_rows:
+                chunk_rows = chapter_rows
+            else:
+                chunk_rows = get_chunks_for_document(cur, document_id)
             
             def _make_location(meta):
                 book = meta.get("book")
