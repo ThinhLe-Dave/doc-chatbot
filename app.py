@@ -15,7 +15,7 @@ from vector_store.db_config import DatabaseConfig
 from vector_store.db_store import PostgresVectorStore
 from datacollector.crawler import Scraper
 from datacollector.pdf_scanner import PDFScanner
-from utils.db_utils import insert_document, store_chunk_batch, SQL_DROP_TABLES
+from utils.db_utils import insert_document, store_chunk_batch, drop_tables
 from utils.config import (
     get_search_top_k,
     get_search_chunk_k,
@@ -275,7 +275,7 @@ def clear_db(
     try:
         store.load()
         with store._conn.cursor() as cur:
-            cur.execute(SQL_DROP_TABLES)
+            drop_tables(cur)
         store._conn.commit()
         typer.secho("Database cleared successfully.", fg=typer.colors.GREEN)
     except Exception as e:

@@ -116,7 +116,7 @@ SQL_GET_CHUNKS_BY_IDS = "SELECT id, document_id, content, path, metadata FROM ch
 SQL_GET_CHUNK_CONTENT = "SELECT content FROM chunks WHERE id = %s"
 
 SQL_SEARCH_SIMILAR = """
-    SELECT c.id, c.document_id, embedding <=> %s::vector AS score
+    SELECT c.id, c.document_id, embedding <#> %s::vector AS score
     FROM embeddings e
     JOIN chunks c ON e.chunk_id = c.id
     ORDER BY score ASC
@@ -124,7 +124,7 @@ SQL_SEARCH_SIMILAR = """
 """
 
 SQL_SEARCH_SIMILAR_WITH_CATEGORIES = """
-    SELECT c.id, c.document_id, embedding <=> %s::vector AS score
+    SELECT c.id, c.document_id, embedding <#> %s::vector AS score
     FROM embeddings e
     JOIN chunks c ON e.chunk_id = c.id
     WHERE EXISTS (
@@ -137,41 +137,97 @@ SQL_SEARCH_SIMILAR_WITH_CATEGORIES = """
 """
 
 
-def insert_document(cur, doc_id: str, source: str, title: str, path: list, metadata: dict) -> None:
-    """Upsert a document record."""
-    cur.execute(SQL_UPSERT_DOCUMENT, (doc_id, source, title, json.dumps(path), json.dumps(metadata)))
-
-
-def upsert_document(cur, doc_id: str, source: str, title: str, path: list, metadata: dict) -> None:
-    """Alias for insert_document with upsert behavior."""
-    insert_document(cur, doc_id, source, title, path, metadata)
-
-
-def update_document_metadata(cur, doc_id: str, keys: list, values: list) -> None:
-    cursor = cur
-    if not isinstance(keys, (list, tuple)) or len(keys) != 1:
-        raise ValueError("update_document_metadata currently supports a single dotted key.")
-    cursor.execute(SQL_UPSERT_DOCUMENT_METADATA, (keys[0], values[0], doc_id))
-
-
-def insert_chunk(cur, chunk_id: str, document_id: str, content: str, path: list, metadata: dict) -> None:
-    """Insert a chunk record."""
-    cur.execute(SQL_INSERT_CHUNK, (chunk_id, document_id, content, json.dumps(path), json.dumps(metadata)))
-
-
-def insert_embedding(cur, chunk_id: str, embedding) -> None:
-    """Insert an embedding record."""
-    cur.execute(SQL_INSERT_EMBEDDING, (chunk_id, embedding.tolist()))
-
-
-def store_chunk_with_embedding(conn, chunk: "Chunk", embedding) -> None:
-    """Store a chunk and its embedding in a single transaction."""
+def create_tables(conn, embedding_dim: int) -> None:
+    """Create tables if they don't exist."""
     with conn.cursor() as cur:
-        cur.execute(SQL_INSERT_CHUNK, (chunk.id, chunk.document_id, chunk.content, json.dumps(chunk.path), json.dumps(chunk.metadata)))
-        cur.execute(SQL_INSERT_EMBEDDING, (chunk.id, embedding.tolist()))
+        cur.execute(SQL_CREATE_DOCUMENTS_TABLE)
+        cur.execute(SQL_CREATE_CHUNKS_TABLE)
+        cur.execute(SQL_CREATE_EMBEDDINGS_TABLE_TEMPLATE.format(dim=embedding_dim))
+        conn.commit()
 
 
-def store_chunk_batch(conn, chunks: list, model) -> None:
+def search_similar(cur, query_embedding, top_k: int):
+    """Search for similar chunks without category filtering."""
+    cur.execute(
+        SQL_SEARCH_SIMILAR,
+        (query_embedding.tolist(), top_k * 4)
+    )
+    return cur.fetchall()
+
+
+def search_similar_with_categories(cur, query_embedding, categories, top_k: int):
+    """Search for similar chunks with category filtering."""
+    cur.execute(
+        SQL_SEARCH_SIMILAR_WITH_CATEGORIES,
+        (query_embedding.tolist(), categories, top_k * 4)
+    )
+    return cur.fetchall()
+
+
+def get_chunks_by_ids(cur, chunk_ids):
+    """Retrieve multiple chunks by their IDs."""
+    cur.execute(SQL_GET_CHUNKS_BY_IDS, (list(chunk_ids),))
+    return cur.fetchall()
+
+
+def get_chunk_content(cur, chunk_id: str):
+    """Retrieve content for a single chunk."""
+    cur.execute(SQL_GET_CHUNK_CONTENT, (chunk_id,))
+    return cur.fetchone()
+
+
+def get_chunk_by_id(cur, chunk_id: str):
+    """Retrieve chunk data by ID."""
+    cur.execute(SQL_GET_CHUNK_BY_ID, (chunk_id,))
+    return cur.fetchone()
+
+
+def get_document_by_id(cur, document_id: str):
+    """Retrieve document data by ID."""
+    cur.execute(
+        "SELECT id, source, title, path, metadata FROM documents WHERE id = %s",
+        (document_id,)
+    )
+    return cur.fetchone()
+
+
+def get_chunks_for_document(cur, document_id: str):
+    """Retrieve chunks for a document."""
+    cur.execute(
+        "SELECT id, document_id, content, path, metadata FROM chunks WHERE document_id = %s ORDER BY id",
+        (document_id,)
+    )
+    return cur.fetchall()
+
+
+def get_chunks_for_chapter(cur, source_hash: str, book: str, chapter: str):
+    """Retrieve chunks for a chapter."""
+    cur.execute(
+        """
+        SELECT id, document_id, content, path, metadata 
+        FROM chunks 
+        WHERE metadata->>'source_hash' = %s 
+          AND metadata->>'book' = %s 
+          AND metadata->>'chapter' = %s 
+        ORDER BY (metadata->>'page')::int, id
+        """,
+        (source_hash, book, chapter)
+    )
+    return cur.fetchall()
+
+
+def count_chunks(cur) -> int:
+    """Return total number of chunks in database."""
+    cur.execute(SQL_COUNT_CHUNKS)
+    return int(cur.fetchone()[0])
+
+
+def drop_tables(cur) -> None:
+    """Drop all tables."""
+    cur.execute(SQL_DROP_TABLES)
+
+
+def store_chunk_batch(conn, chunks, model) -> None:
     """Store a batch of chunks and embeddings."""
     import sys
     from embedding.embedding import embed_texts

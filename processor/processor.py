@@ -14,7 +14,7 @@ from utils.logging import debug, error
 from vector_store.db_store import PostgresVectorStore, PostgresVectorStoreError
 from vector_store.db_config import DatabaseConfig
 from vector_store.store import VectorStore
-from utils.db_utils import SQL_GET_CHUNKS_BY_IDS, SQL_GET_CHUNK_CONTENT
+from utils.db_utils import get_chunks_by_ids, get_chunk_content
 from utils.config import (
     get_search_top_k,
     get_search_chunk_k,
@@ -132,11 +132,7 @@ def _expand_candidate_chunks(
     expanded = set(candidate_ids)
     try:
         with store._conn.cursor() as cur:
-            cur.execute(
-                SQL_GET_CHUNKS_BY_IDS,
-                (list(candidate_ids),),
-            )
-            rows = cur.fetchall()
+            rows = get_chunks_by_ids(cur, candidate_ids)
     except Exception as exc:
         debug(f"context expansion fetch failed: {exc}", "processor")
         return expanded
@@ -404,11 +400,8 @@ def _rank_results(
         store.load()
         expanded_candidate_ids = _expand_candidate_chunks(store, original_ids)
         with store._conn.cursor() as cur:
-            cur.execute(
-                SQL_GET_CHUNKS_BY_IDS,
-                (list(expanded_candidate_ids),)
-            )
-            for row in cur.fetchall():
+            rows = get_chunks_by_ids(cur, expanded_candidate_ids)
+            for row in rows:
                 chunk = Chunk(
                     id=row[0],
                     document_id=row[1],
@@ -565,8 +558,7 @@ def _compute_keyword_scores(chunk_ids: set, query_terms: set) -> dict:
                 store.load()
                 with store._conn.cursor() as cur:
                     for chunk_id in chunk_ids:
-                        cur.execute(SQL_GET_CHUNK_CONTENT, (chunk_id,))
-                        row = cur.fetchone()
+                        row = get_chunk_content(cur, chunk_id)
                         if row:
                             normalized_text = _normalize_ocr(row[0].lower())
                             matched = sum(

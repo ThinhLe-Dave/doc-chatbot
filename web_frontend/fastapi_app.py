@@ -15,7 +15,11 @@ from datetime import datetime, timezone
 
 from processor.processor import recommend_documents, ask_question, clean_content
 from processor.processor import _get_ordering_key
-
+from utils.db_utils import (
+    get_document_by_id,
+    get_chunks_for_document,
+    get_chunks_for_chapter,
+)
 
 def _extract_short_ref(meta: dict, location: str) -> str:
     chapter = meta.get("chapter")
@@ -444,11 +448,7 @@ async def get_document(document_id: str):
         store.load()
         
         with store._conn.cursor() as cur:
-            cur.execute("SELECT id, source, title, path, metadata FROM documents WHERE id = %s", (document_id,))
-            doc_row = cur.fetchone()
-            
-            chunk_query = "SELECT id, document_id, content, path, metadata FROM chunks WHERE document_id = %s ORDER BY id"
-            chunk_params = (document_id,)
+            doc_row = get_document_by_id(cur, document_id)
             
             if not doc_row and document_id.startswith(_CHAPTER_ID_PREFIX):
                 try:
@@ -461,18 +461,7 @@ async def get_document(document_id: str):
                     book = chapter_data.get("b", "")
                     chapter = chapter_data.get("c", "")
                     
-                    chunk_query = """
-                        SELECT id, document_id, content, path, metadata 
-                        FROM chunks 
-                        WHERE metadata->>'source_hash' = %s 
-                          AND metadata->>'book' = %s 
-                          AND metadata->>'chapter' = %s 
-                        ORDER BY (metadata->>'page')::int, id
-                    """
-                    chunk_params = (source_hash, book, chapter)
-                    
-                    cur.execute(chunk_query, chunk_params)
-                    chapter_rows = cur.fetchall()
+                    chapter_rows = get_chunks_for_chapter(cur, source_hash, book, chapter)
                     
                     if chapter_rows:
                         first_meta = chapter_rows[0][4] or {}
@@ -489,8 +478,7 @@ async def get_document(document_id: str):
             if not doc_row:
                 return JSONResponse({"error": "Document not found"}, status_code=404)
             
-            cur.execute(chunk_query, chunk_params)
-            chunk_rows = cur.fetchall()
+            chunk_rows = get_chunks_for_document(cur, document_id)
             
             def _make_location(meta):
                 book = meta.get("book")

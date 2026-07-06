@@ -10,18 +10,16 @@ from utils.logging import debug
 from vector_store.db_config import DatabaseConfig
 from vector_store.index import SearchResult
 from utils.db_utils import (
-    SQL_CREATE_DOCUMENTS_TABLE,
-    SQL_CREATE_CHUNKS_TABLE,
-    SQL_CREATE_EMBEDDINGS_TABLE_TEMPLATE,
-    SQL_UPSERT_DOCUMENT,
-    SQL_INSERT_CHUNK,
-    SQL_INSERT_EMBEDDING,
-    SQL_SEARCH_SIMILAR,
-    SQL_SEARCH_SIMILAR_WITH_CATEGORIES,
-    SQL_GET_CHUNK_BY_ID,
-    SQL_GET_CHUNKS_BY_IDS,
-    SQL_GET_CHUNK_CONTENT,
-    SQL_COUNT_CHUNKS,
+    create_tables,
+    insert_document,
+    insert_chunk,
+    insert_embedding,
+    store_chunk_batch,
+    search_similar,
+    search_similar_with_categories,
+    get_chunks_by_ids,
+    get_chunk_by_id,
+    count_chunks,
 )
 
 
@@ -54,11 +52,7 @@ class PostgresVectorStore:
     def _ensure_tables(self) -> None:
         """Create tables if they don't exist."""
         conn = self._get_connection()
-        with conn.cursor() as cur:
-            cur.execute(SQL_CREATE_DOCUMENTS_TABLE)
-            cur.execute(SQL_CREATE_CHUNKS_TABLE)
-            cur.execute(SQL_CREATE_EMBEDDINGS_TABLE_TEMPLATE.format(dim=self._embedding_dimension))
-            conn.commit()
+        create_tables(conn, self._embedding_dimension)
 
     def load(self) -> "PostgresVectorStore":
         """Load vector index from database (no-op for DB, always ready)."""
@@ -94,18 +88,9 @@ class PostgresVectorStore:
                 for chunk, embedding in zip(batch, batch_embeddings):
                     if chunk.document_id not in seen_docs:
                         seen_docs.add(chunk.document_id)
-                        cur.execute(
-                            SQL_UPSERT_DOCUMENT,
-                            (chunk.document_id, chunk.metadata.get("source", ""), chunk.metadata.get("title", ""), json.dumps(chunk.path), json.dumps(chunk.metadata)),
-                        )
-                    cur.execute(
-                        SQL_INSERT_CHUNK,
-                        (chunk.id, chunk.document_id, chunk.content, json.dumps(chunk.path), json.dumps(chunk.metadata)),
-                    )
-                    cur.execute(
-                        SQL_INSERT_EMBEDDING,
-                        (chunk.id, embedding.tolist())
-                    )
+                        insert_document(cur, chunk.document_id, chunk.metadata.get("source", ""), chunk.metadata.get("title", ""), chunk.path, chunk.metadata)
+                    insert_chunk(cur, chunk.id, chunk.document_id, chunk.content, chunk.path, chunk.metadata)
+                    insert_embedding(cur, chunk.id, embedding)
 
                 conn.commit()
                 debug(f"build batch {batch_index} processed", "db.store")
@@ -119,23 +104,17 @@ class PostgresVectorStore:
         min_score: float = 0.0,
         categories: Optional[List[str]] = None,
     ) -> List[SearchResult]:
-        """Search for similar chunks using cosine similarity."""
+        """Search for similar chunks using cosine distance and return similarity scores."""
         conn = self._get_connection()
         normalized_categories = [str(category).lower() for category in categories or []]
 
         with conn.cursor() as cur:
             if normalized_categories:
-                cur.execute(
-                    SQL_SEARCH_SIMILAR_WITH_CATEGORIES,
-                    (query_embedding.tolist(), normalized_categories, top_k * 4)
-                )
+                rows = search_similar_with_categories(cur, query_embedding, normalized_categories, top_k)
             else:
-                cur.execute(
-                    SQL_SEARCH_SIMILAR,
-                    (query_embedding.tolist(), top_k * 4)
-                )
+                rows = search_similar(cur, query_embedding, top_k)
             results = []
-            for row in cur.fetchall():
+            for row in rows:
                 chunk_id, document_id, distance = row
                 score = float(1.0 - distance)
                 if score >= min_score:
@@ -159,14 +138,8 @@ class PostgresVectorStore:
             for chunk in iter_chunks_from_json(chunk_file):
                 if chunk.document_id not in seen_docs:
                     seen_docs.add(chunk.document_id)
-                    cur.execute(
-                        SQL_UPSERT_DOCUMENT,
-                        (chunk.document_id, chunk.metadata.get("source", ""), chunk.metadata.get("title", ""), json.dumps(chunk.path), json.dumps(chunk.metadata)),
-                    )
-                cur.execute(
-                    SQL_INSERT_CHUNK,
-                    (chunk.id, chunk.document_id, chunk.content, json.dumps(chunk.path), json.dumps(chunk.metadata)),
-                )
+                    insert_document(cur, chunk.document_id, chunk.metadata.get("source", ""), chunk.metadata.get("title", ""), chunk.path, chunk.metadata)
+                insert_chunk(cur, chunk.id, chunk.document_id, chunk.content, chunk.path, chunk.metadata)
                 count += 1
             conn.commit()
 
@@ -176,10 +149,7 @@ class PostgresVectorStore:
         """Retrieve multiple chunks by their IDs."""
         conn = self._get_connection()
         with conn.cursor() as cur:
-            cur.execute(
-                SQL_GET_CHUNKS_BY_IDS,
-                (list(chunk_ids),),
-            )
+            rows = get_chunks_by_ids(cur, chunk_ids)
             return [
                 {
                     "id": row[0],
@@ -188,7 +158,7 @@ class PostgresVectorStore:
                     "path": row[3] if row[3] else [],
                     "metadata": row[4] if row[4] else {},
                 }
-                for row in cur.fetchall()
+                for row in rows
             ]
 
     def get_chunk(self, chunk_id: str) -> Optional[dict]:
@@ -202,8 +172,7 @@ class PostgresVectorStore:
         """Return total number of chunks in database."""
         conn = self._get_connection()
         with conn.cursor() as cur:
-            cur.execute(SQL_COUNT_CHUNKS)
-            return int(cur.fetchone()[0])
+            return count_chunks(cur)
 
     def close(self) -> None:
         """Close database connection."""
