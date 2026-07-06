@@ -146,6 +146,21 @@ def create_tables(conn, embedding_dim: int) -> None:
         conn.commit()
 
 
+def insert_document(cur, doc_id: str, source: str, title: str, path: list, metadata: dict) -> None:
+    """Upsert a document record."""
+    cur.execute(SQL_UPSERT_DOCUMENT, (doc_id, source, title, json.dumps(path), json.dumps(metadata)))
+
+
+def insert_chunk(cur, chunk_id: str, document_id: str, content: str, path: list, metadata: dict) -> None:
+    """Insert a chunk record."""
+    cur.execute(SQL_INSERT_CHUNK, (chunk_id, document_id, content, json.dumps(path), json.dumps(metadata)))
+
+
+def insert_embedding(cur, chunk_id: str, embedding) -> None:
+    """Insert an embedding record."""
+    cur.execute(SQL_INSERT_EMBEDDING, (chunk_id, embedding.tolist()))
+
+
 def search_similar(cur, query_embedding, top_k: int):
     """Search for similar chunks without category filtering."""
     cur.execute(
