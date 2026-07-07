@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from chunker.document import compute_content_hash, Document
 from chunker.keywords import extract_keywords as _extract_keywords
+from chunker.graph import ChunkGraph, TextUnit
 
 _SENTENCE_END_RE = re.compile(r'(?<=[.!?])\s+')
 
@@ -198,7 +199,7 @@ def cache_chunk_ids(chunk_file: str, chunk_ids: List[str]) -> None:
     _load_chunk_ids_cached.cache_clear()
 
 
-def write_chunks_to_file(documents: List["Document"], output_path: str) -> int:
+def write_chunks_to_file(documents: List["Document"], output_path: str, graph_mode: bool = False, semantic_threshold: float = 0.75, resolution: float = 1.0) -> int:
     """Write document chunks to JSONL file. Returns total chunk count."""
     import os
     import json
@@ -211,7 +212,11 @@ def write_chunks_to_file(documents: List["Document"], output_path: str) -> int:
     with open(output_path, "w", encoding="utf-8") as f:
         for document in documents:
             try:
-                for chunk in chunker.create_chunks_from_document(document):
+                if graph_mode:
+                    chunks = chunker.create_graph_chunks(document, semantic_threshold=semantic_threshold, resolution=resolution)[0]
+                else:
+                    chunks = chunker.create_chunks_from_document(document)
+                for chunk in chunks:
                     f.write(json.dumps(chunk.to_dict(), ensure_ascii=False))
                     f.write("\n")
                     total_chunks += 1
@@ -296,6 +301,9 @@ class Chunk:
     content: str
     path: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    unit_ids: List[str] = field(default_factory=list)
+    graph_id: Optional[str] = None
+    parent_chunk_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -304,6 +312,9 @@ class Chunk:
             "content": self.content,
             "path": self.path,
             "metadata": self.metadata,
+            "unit_ids": self.unit_ids,
+            "graph_id": self.graph_id,
+            "parent_chunk_id": self.parent_chunk_id,
         }
 
     @staticmethod
@@ -329,6 +340,9 @@ class Chunk:
             content=content,
             path=data.get("path", []),
             metadata=meta,
+            unit_ids=data.get("unit_ids", []),
+            graph_id=data.get("graph_id"),
+            parent_chunk_id=data.get("parent_chunk_id"),
         )
 
 
@@ -506,3 +520,107 @@ class Chunker:
                 **(document.metadata or {}),
             },
         )
+
+    def create_graph_chunks(self, document, semantic_threshold: float = 0.75, resolution: float = 1.0) -> Tuple[List["Chunk"], ChunkGraph]:
+        """Create graph-aware chunks from a Document.
+
+        Returns a list of Chunk objects with graph metadata and the
+        underlying ChunkGraph for persistence.
+        """
+        document_id = document.id
+        base_metadata = {
+            "source": document.source,
+            "title": document.title,
+            **(document.metadata or {}),
+        }
+        base_metadata.setdefault("source_hash", compute_content_hash(document.content))
+        base_metadata.setdefault("document_hash", compute_content_hash(document.title + "\n" + document.content))
+
+        units = _extract_text_units(document)
+        if not units:
+            return [], ChunkGraph()
+
+        graph = ChunkGraph()
+        for unit in units:
+            graph.add_unit(unit)
+        graph.build_structural_edges(units)
+        graph.build_hierarchical_edges(units)
+        graph.build_semantic_edges(units, threshold=semantic_threshold)
+
+        communities = graph.detect_communities(resolution=resolution)
+
+        doc_units_by_community: Dict[int, List[TextUnit]] = {}
+        for unit in units:
+            label = communities.get(unit.unit_id, 0)
+            doc_units_by_community.setdefault(label, []).append(unit)
+
+        result_chunks: List["Chunk"] = []
+        chunk_index = 0
+        for label in sorted(doc_units_by_community.keys()):
+            group = sorted(doc_units_by_community[label], key=lambda u: u.index)
+            combined = " ".join(u.text for u in group)
+            unit_ids = [u.unit_id for u in group]
+            metadata = {
+                **base_metadata,
+                "chunk_index": chunk_index,
+                "categories": self._build_categories(base_metadata, combined),
+                "unit_ids": unit_ids,
+                "graph_id": f"{document_id}_graph_{chunk_index}",
+                "source_hash": base_metadata.get("source_hash"),
+                "document_hash": base_metadata.get("document_hash"),
+            }
+            result_chunks.append(Chunk(
+                id=f"{document_id}_graph_{chunk_index}",
+                document_id=document_id,
+                content=combined,
+                path=self._build_chunk_path(metadata),
+                metadata=metadata,
+                unit_ids=unit_ids,
+                graph_id=f"{document_id}_graph_{chunk_index}",
+                parent_chunk_id=None,
+            ))
+            chunk_index += 1
+
+        return result_chunks, graph
+
+
+def _extract_text_units(document) -> List[TextUnit]:
+    units: List[TextUnit] = []
+    source_hash = compute_content_hash(document.content)
+    text_segments = [seg.strip() for seg in document.content.split("\n\n") if seg.strip()]
+    if not text_segments:
+        text_segments = [document.content.strip()] if document.content.strip() else []
+
+    base_metadata = {
+        "source": document.source,
+        "title": document.title,
+        "source_hash": source_hash,
+    }
+    if document.metadata:
+        base_metadata.update(document.metadata)
+
+    idx = 0
+    for segment in text_segments:
+        unit_id = f"{document.id}_unit_{idx}"
+        units.append(TextUnit(
+            unit_id=unit_id,
+            document_id=document.id,
+            text=segment,
+            unit_type="paragraph",
+            metadata={**base_metadata, "index": idx},
+            index=idx,
+        ))
+        idx += 1
+
+    if idx == 0:
+        unit_id = f"{document.id}_unit_0"
+        units.append(TextUnit(
+            unit_id=unit_id,
+            document_id=document.id,
+            text=document.content,
+            unit_type="paragraph",
+            metadata={**base_metadata, "index": 0},
+            index=0,
+        ))
+
+    return units

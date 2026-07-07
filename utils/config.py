@@ -206,3 +206,45 @@ def get_allow_scrape() -> bool:
 
 def get_allow_pdf_scan() -> bool:
     return _parse_bool(get("features", "allow_pdf_scan", ""), FEATURES_DEFAULTS["allow_pdf_scan"])
+
+
+# Graph configuration defaults
+GRAPH_DEFAULTS = {
+    "enabled": False,
+    "semantic_threshold": 0.75,
+    "community_resolution": 1.0,
+    "expansion_hops": 2,
+    "decay": 0.5,
+}
+
+
+def get_graph_enabled() -> bool:
+    return _parse_bool(get("graph", "enabled", ""), GRAPH_DEFAULTS["enabled"])
+
+
+def get_graph_semantic_threshold() -> float:
+    try:
+        return float(get("graph", "semantic_threshold", str(GRAPH_DEFAULTS["semantic_threshold"])))
+    except ValueError:
+        return GRAPH_DEFAULTS["semantic_threshold"]
+
+
+def get_graph_community_resolution() -> float:
+    try:
+        return float(get("graph", "community_resolution", str(GRAPH_DEFAULTS["community_resolution"])))
+    except ValueError:
+        return GRAPH_DEFAULTS["community_resolution"]
+
+
+def get_graph_expansion_hops() -> int:
+    try:
+        return int(get("graph", "expansion_hops", str(GRAPH_DEFAULTS["expansion_hops"])))
+    except ValueError:
+        return GRAPH_DEFAULTS["expansion_hops"]
+
+
+def get_graph_decay() -> float:
+    try:
+        return float(get("graph", "decay", str(GRAPH_DEFAULTS["decay"])))
+    except ValueError:
+        return GRAPH_DEFAULTS["decay"]

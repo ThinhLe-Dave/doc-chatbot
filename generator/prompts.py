@@ -19,6 +19,7 @@ SYSTEM_PROMPT = (
     "[FALLBACK]\n"
     "- If absolutely no text fragments match or support any aspect of the query, output exactly and only: 'No relevant information found in the database.'\n"
     "- Do not include conversational filler, apologies, or introductory remarks if the fallback condition is met."
+    "- If relevant information exists, answer directly using only the provided context and cited blocks."
 )
 
 USER_PROMPT_TEMPLATE = """Context:
