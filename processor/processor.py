@@ -29,7 +29,7 @@ from utils.config import (
 
 
 _NUMERIC_TAIL_RE = re.compile(r"/(\d+)$")
-_CONTEXT_WINDOW = 3
+_CONTEXT_WINDOW = 1
 _CHAPTER_ID_PREFIX = "chapter:"
 _SOURCE_PAGE_RE = re.compile(r"#page=\d+$", re.IGNORECASE)
 _TITLE_PAGE_RE = re.compile(r"\s*\(page\s*\d+\)$", re.IGNORECASE)

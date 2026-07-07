@@ -134,7 +134,7 @@ async def search(request: Request):
         page_size = int(body.get("page_size", 10))
         chunk_k = int(body.get("chunk_k", 3))
         min_score = float(body.get("min_score", 0.01))
-        hybrid = bool(body.get("hybrid", True))
+        hybrid = bool(body.get("hybrid", False))
         hybrid_weight = float(body.get("hybrid_weight", 0.1))
         categories = body.get("categories")
     except (ValueError, TypeError):
@@ -326,7 +326,7 @@ async def chat_endpoint(request: Request):
         top_k = int(body.get("top_k", 10))
         chunk_k = int(body.get("chunk_k", 3))
         min_score = float(body.get("min_score", 0.01))
-        hybrid = bool(body.get("hybrid", True))
+        hybrid = bool(body.get("hybrid", False))
         hybrid_weight = float(body.get("hybrid_weight", 0.1))
         categories = body.get("categories")
     except (ValueError, TypeError):
@@ -403,7 +403,7 @@ async def chat_direct(request: Request):
         top_k = int(body.get("top_k", 10))
         chunk_k = int(body.get("chunk_k", 3))
         min_score = float(body.get("min_score", 0.01))
-        hybrid = bool(body.get("hybrid", True))
+        hybrid = bool(body.get("hybrid", False))
         hybrid_weight = float(body.get("hybrid_weight", 0.1))
         categories = body.get("categories")
     except (ValueError, TypeError):

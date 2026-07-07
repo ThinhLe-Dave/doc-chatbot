@@ -61,7 +61,7 @@ SEARCH_DEFAULTS = {
     "top_k": 10,
     "chunk_k": 3,
     "min_score": 0.01,
-    "hybrid": True,
+    "hybrid": False,
     "hybrid_weight": 0.1,
 }
 
