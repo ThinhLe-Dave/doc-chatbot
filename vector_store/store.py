@@ -104,13 +104,13 @@ class VectorStore:
         offset = 0
         for batch_index, batch in enumerate(iter_chunk_batches(chunk_file, batch_size), start=1):
             batch_texts = [chunk.content for chunk in batch]
-            print(f"[debug] vector_store.build: batch {batch_index} size={len(batch)} offset_before={offset}", flush=True)
+            debug(f"build batch {batch_index} size={len(batch)} offset_before={offset}", "vector.store")
             for index, chunk in enumerate(batch[:5], start=1):
-                print(
-                    f"[debug] vector_store.build: batch_chunk {index}/{len(batch)} id={chunk.id} "
+                debug(
+                    f"build batch_chunk {index}/{len(batch)} id={chunk.id} "
                     f"chars={len(chunk.content)} {split_stats(chunk.content)} "
                     f"preview={text_sample(chunk.content)!r}",
-                    flush=True,
+                    "vector.store",
                 )
             batch_embeddings = embed_texts(model, batch_texts, batch_size=batch_size)
             embeddings[offset : offset + len(batch)] = batch_embeddings

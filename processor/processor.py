@@ -356,6 +356,51 @@ def _rank_results(
     normalized_categories = {c.lower() for c in categories or []}
     document_chunks: dict = {}
 
+    def _add_chunk_to_document(
+        chunk_id: str,
+        document_id: str,
+        content: str,
+        path: list,
+        metadata: dict,
+        score_value: float,
+    ) -> None:
+        entry = document_chunks.get(document_id)
+        if entry is None:
+            document_chunks[document_id] = _build_document_entry(
+                chunk_id=chunk_id,
+                document_id=document_id,
+                content=content,
+                path=path,
+                metadata=metadata,
+                score_value=score_value,
+                chunk_k=chunk_k,
+            )
+            return
+
+        entry["chunks"].append((score_value, content))
+        if score_value <= entry["score"]:
+            return
+
+        entry["score"] = score_value
+        entry["best_chunk"] = content
+        entry["title"] = metadata.get("title", entry.get("title", ""))
+        entry["source"] = metadata.get("source", entry.get("source", ""))
+        entry["book"] = metadata.get("book", entry.get("book"))
+        entry["chapter"] = metadata.get("chapter", entry.get("chapter"))
+        entry["verse"] = metadata.get("verse", entry.get("verse"))
+        entry["section"] = metadata.get("section", entry.get("section"))
+        entry["path"] = path or entry.get("path", [])
+        entry["location"] = {
+            k: v
+            for k, v in {
+                "book": entry.get("book"),
+                "chapter": entry.get("chapter"),
+                "verse": entry.get("verse"),
+                "section": entry.get("section"),
+            }.items()
+            if v
+        }
+
     if hybrid and query_terms:
         keyword_scores = _compute_keyword_scores(candidate_ids, query_terms)
     else:
@@ -380,42 +425,14 @@ def _rank_results(
 
             meta = chunk.metadata or {}
             document_id = _build_chapter_id(meta) or chunk.document_id
-            entry = document_chunks.get(document_id)
-
-            if entry is None:
-                entry = _build_document_entry(
-                    chunk_id=chunk.id,
-                    document_id=document_id,
-                    content=chunk.content,
-                    path=chunk.path,
-                    metadata=chunk.metadata,
-                    score_value=score_value,
-                    chunk_k=chunk_k,
-                )
-                document_chunks[document_id] = entry
-            else:
-                entry["chunks"].append((score_value, chunk.content))
-                if score_value > entry["score"]:
-                    entry["score"] = score_value
-                    entry["best_chunk"] = chunk.content
-                    meta = chunk.metadata or {}
-                    entry["title"] = meta.get("title", entry.get("title", ""))
-                    entry["source"] = meta.get("source", entry.get("source", ""))
-                    entry["book"] = meta.get("book", entry.get("book"))
-                    entry["chapter"] = meta.get("chapter", entry.get("chapter"))
-                    entry["verse"] = meta.get("verse", entry.get("verse"))
-                    entry["section"] = meta.get("section", entry.get("section"))
-                    entry["path"] = chunk.path or entry.get("path", [])
-                    entry["location"] = {
-                        k: v
-                        for k, v in {
-                            "book": entry.get("book"),
-                            "chapter": entry.get("chapter"),
-                            "verse": entry.get("verse"),
-                            "section": entry.get("section"),
-                        }.items()
-                        if v
-                    }
+            _add_chunk_to_document(
+                chunk_id=chunk.id,
+                document_id=document_id,
+                content=chunk.content,
+                path=chunk.path,
+                metadata=chunk.metadata,
+                score_value=score_value,
+            )
     else:
         store.load()
         expanded_candidate_ids = _expand_candidate_chunks(store, original_ids)
@@ -443,42 +460,14 @@ def _rank_results(
 
                 meta = chunk.metadata or {}
                 document_id = _build_chapter_id(meta) or chunk.document_id
-                entry = document_chunks.get(document_id)
-
-                if entry is None:
-                    entry = _build_document_entry(
-                        chunk_id=chunk.id,
-                        document_id=document_id,
-                        content=chunk.content,
-                        path=chunk.path,
-                        metadata=chunk.metadata,
-                        score_value=score_value,
-                        chunk_k=chunk_k,
-                    )
-                    document_chunks[document_id] = entry
-                else:
-                    entry["chunks"].append((score_value, chunk.content))
-                    if score_value > entry["score"]:
-                        entry["score"] = score_value
-                        entry["best_chunk"] = chunk.content
-                        meta = chunk.metadata or {}
-                        entry["title"] = meta.get("title", entry.get("title", ""))
-                        entry["source"] = meta.get("source", entry.get("source", ""))
-                        entry["book"] = meta.get("book", entry.get("book"))
-                        entry["chapter"] = meta.get("chapter", entry.get("chapter"))
-                        entry["verse"] = meta.get("verse", entry.get("verse"))
-                        entry["section"] = meta.get("section", entry.get("section"))
-                        entry["path"] = chunk.path or entry.get("path", [])
-                        entry["location"] = {
-                            k: v
-                            for k, v in {
-                                "book": entry.get("book"),
-                                "chapter": entry.get("chapter"),
-                                "verse": entry.get("verse"),
-                                "section": entry.get("section"),
-                            }.items()
-                            if v
-                        }
+                _add_chunk_to_document(
+                    chunk_id=chunk.id,
+                    document_id=document_id,
+                    content=chunk.content,
+                    path=chunk.path,
+                    metadata=chunk.metadata,
+                    score_value=score_value,
+                )
 
     for doc in document_chunks.values():
         doc["chunks"] = deduplicate_chunks(doc["chunks"])

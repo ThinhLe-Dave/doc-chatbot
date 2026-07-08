@@ -16,7 +16,7 @@ from utils.config import (
 )
 
 
-# TODO: Consider deprecating SearchConfig and DatabaseConfig in favor of direct utils.config imports
+# SearchConfig and DatabaseConfig are maintained for compatibility with legacy callers.
 @dataclass
 class SearchConfig:
     """Search configuration parameters."""

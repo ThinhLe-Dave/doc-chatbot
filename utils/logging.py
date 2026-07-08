@@ -95,13 +95,11 @@ def warning(msg: str, category: str = "") -> None:
 
 
 def error(msg: str, category: str = "") -> None:
-    if not is_enabled(category):
-        return
     try:
         import typer
 
         prefix = f"[ERROR][{category}]" if category else "[ERROR]"
-        typer.secho(f"{prefix} {msg}", fg=typer.colors.RED, bold=True)
+        typer.secho(f"{prefix} {msg}", fg=typer.colors.RED, bold=True, err=True)
     except Exception:
         pass
 

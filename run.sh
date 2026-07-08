@@ -60,6 +60,7 @@ print_success() {
     echo "💬 To chat via CLI:                    ./run.sh chat <question>"
     echo "📄 To scan a PDF:                      ./run.sh pdf-scan <path_to_pdf>"
     echo "🌐 To scrape a website:                ./run.sh scrape <url>"
+    echo "🕸️  To re-chunk DB docs into graph:    ./run.sh regraph [--doc-id <id>] [--source <url>] [--force] [--verbose]"
     echo "🌐 To run the web UI:                  ./run.sh serve --help"
     echo "🧪 To run tests:                       ./run.sh test"
     echo "🔨 To compile/check all .py files:     ./run.sh compile"
@@ -165,6 +166,12 @@ main() {
     if [[ "$1" == "scrape" ]]; then
         shift
         run_app scrape "$@"
+        exit 0
+    fi
+
+    if [[ "$1" == "regraph" ]]; then
+        shift
+        run_app regraph "$@"
         exit 0
     fi
 

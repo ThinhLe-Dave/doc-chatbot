@@ -7,6 +7,19 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    from utils.logging import debug as _debug
+except Exception:  # pragma: no cover - fallback if utils import path is unavailable
+    def _debug(msg: str, category: str = "") -> None:
+        pass
+
+# Configurable debug category. Enable via [logging] categories=graph in config.cfg
+GRAPH_DEBUG_CATEGORY = "graph"
+
+
+def _log(msg: str) -> None:
+    _debug(msg, GRAPH_DEBUG_CATEGORY)
+
 
 @dataclass
 class TextUnit:
@@ -74,12 +87,15 @@ class ChunkGraph:
         self.units: Dict[str, TextUnit] = {}
 
     def add_unit(self, unit: TextUnit) -> None:
+        _log("add_unit: unit_id=%s document_id=%s units=%d" % (unit.unit_id, unit.document_id, len(self.units)))
         self.units[unit.unit_id] = unit
 
     def add_edge(self, edge: GraphEdge) -> None:
+        _log("add_edge: source=%s target=%s type=%s weight=%.4f edges=%d" % (edge.source, edge.target, edge.edge_type, edge.weight, len(self.edges)))
         self.edges.append(edge)
 
     def neighbors(self, unit_id: str, max_hops: int = 1) -> List[str]:
+        _log("neighbors: unit_id=%s max_hops=%d total_units=%d total_edges=%d" % (unit_id, max_hops, len(self.units), len(self.edges)))
         adjacency: Dict[str, List[Tuple[str, float]]] = {uid: [] for uid in self.units}
         for edge in self.edges:
             adjacency.setdefault(edge.source, []).append((edge.target, edge.weight))
@@ -95,17 +111,22 @@ class ChunkGraph:
                         visited.add(neighbor)
                         next_frontier.append(neighbor)
             frontier = next_frontier
-        return [nid for nid in visited if nid != unit_id]
+        result = [nid for nid in visited if nid != unit_id]
+        _log("neighbors: unit_id=%s found=%d" % (unit_id, len(result)))
+        return result
 
     def build_structural_edges(self, units: List[TextUnit]) -> None:
+        _log("build_structural_edges: units=%d" % len(units))
         ordered = sorted(units, key=lambda u: u.index)
         for i in range(len(ordered) - 1):
             source_id = ordered[i].unit_id
             target_id = ordered[i + 1].unit_id
             self.edges.append(GraphEdge(source=source_id, target=target_id, edge_type="structural", weight=1.0))
             self.edges.append(GraphEdge(source=target_id, target=source_id, edge_type="structural", weight=1.0))
+        _log("build_structural_edges: added=%d edges=%d" % ((len(ordered) - 1) * 2, len(self.edges)))
 
     def build_hierarchical_edges(self, units: List[TextUnit]) -> None:
+        _log("build_hierarchical_edges: units=%d" % len(units))
         by_section: Dict[str, List[TextUnit]] = {}
         for unit in units:
             section = str(unit.metadata.get("chapter") or unit.metadata.get("section") or unit.metadata.get("book") or "root")
@@ -117,8 +138,10 @@ class ChunkGraph:
                 source_id = ordered[i].unit_id
                 target_id = ordered[i + 1].unit_id
                 self.edges.append(GraphEdge(source=source_id, target=target_id, edge_type="hierarchical", weight=0.5))
+        _log("build_hierarchical_edges: sections=%d edges=%d" % (len(by_section), len(self.edges)))
 
     def build_semantic_edges(self, units: List[TextUnit], threshold: float = 0.75) -> None:
+        _log("build_semantic_edges: units=%d threshold=%.4f" % (len(units), threshold))
         vectors: Dict[str, List[float]] = {}
         for unit in units:
             embedding = unit.metadata.get("embedding")
@@ -133,7 +156,9 @@ class ChunkGraph:
                 continue
             vectors[unit.unit_id] = [float(v) for v in embedding]
 
+        _log("build_semantic_edges: units_with_embedding=%d" % len(vectors))
         unit_ids = list(vectors.keys())
+        semantic_edges_before = len(self.edges)
         for i in range(len(unit_ids)):
             for j in range(i + 1, len(unit_ids)):
                 similarity = _cosine_similarity(vectors[unit_ids[i]], vectors[unit_ids[j]])
@@ -144,13 +169,16 @@ class ChunkGraph:
                         edge_type="semantic",
                         weight=similarity,
                     ))
+        _log("build_semantic_edges: added=%d edges=%d" % (len(self.edges) - semantic_edges_before, len(self.edges)))
 
     def detect_communities(self, resolution: float = 1.0) -> Dict[str, int]:
         if not self.units:
             return {}
+        _log("detect_communities: units=%d edges=%d resolution=%.4f" % (len(self.units), len(self.edges), resolution))
         unit_list = list(self.units.keys())
         unit_to_idx = {uid: idx for idx, uid in enumerate(unit_list)}
         comms = _greedy_modularity(unit_list, self.edges, unit_to_idx, resolution)
+        _log("detect_communities: communities=%d" % len(comms))
         return {unit_id: label for label, group in enumerate(comms) for unit_id in group}
 
     def to_dict(self) -> Dict[str, Any]:
@@ -172,6 +200,7 @@ class ChunkGraph:
 
 def _cosine_similarity(a: List[float], b: List[float]) -> float:
     if not a or not b or len(a) != len(b):
+        _log("_cosine_similarity: mismatched/empty vectors -> 0.0")
         return 0.0
     dot = 0.0
     norm_a = 0.0
@@ -193,86 +222,62 @@ def _greedy_modularity(
     resolution: float,
 ) -> List[List[str]]:
     n = len(unit_ids)
+    _log("_greedy_modularity: n=%d edges=%d resolution=%.4f" % (n, len(edges), resolution))
     if n <= 1:
         return [unit_ids[:]] if unit_ids else []
 
-    adjacency_builder: Dict[int, Dict[int, float]] = {i: {} for i in range(n)}
-    total_weight = 0.0
+    adjacency: Dict[int, List[Tuple[int, float]]] = {i: [] for i in range(n)}
+    degrees = [0.0] * n
     for edge in edges:
         src = unit_to_idx.get(edge.source)
         tgt = unit_to_idx.get(edge.target)
         if src is None or tgt is None:
             continue
-        key = (min(src, tgt), max(src, tgt))
-        adjacency_builder[key[0]][key[1]] = adjacency_builder[key[0]].get(key[1], 0.0) + edge.weight
-        adjacency_builder[key[1]][key[0]] = adjacency_builder[key[1]].get(key[0], 0.0) + edge.weight
+        adjacency[src].append((tgt, edge.weight))
+        adjacency[tgt].append((src, edge.weight))
+        degrees[src] += edge.weight
+        degrees[tgt] += edge.weight
 
-    adjacency: Dict[int, List[Tuple[int, float]]] = {i: [] for i in range(n)}
-    for src, targets in adjacency_builder.items():
-        for tgt, weight in targets.items():
-            adjacency[src].append((tgt, weight))
-            total_weight += weight
-
-    if total_weight == 0.0:
+    total = sum(degrees)  # = 2 * (sum of edge weights), i.e. 2m
+    if total == 0.0:
         return [[uid] for uid in unit_ids]
 
-    m_inv = 1.0 / total_weight
-    communities = [[unit_ids[i]] for i in range(n)]
-    com_idx = list(range(n))
-    degrees = [sum(w for _, w in adjacency[i]) for i in range(n)]
-    internal = [0.0 for _ in range(n)]
-    for edge in edges:
-        src = unit_to_idx.get(edge.source)
-        tgt = unit_to_idx.get(edge.target)
-        if src is None or tgt is None:
-            continue
-        key = (min(src, tgt), max(src, tgt))
-        weight = adjacency_builder[key[0]].get(key[1], 0.0)
-        if src == tgt:
-            internal[src] += weight * 2.0
+    # Louvain first phase: greedily move nodes to maximize modularity.
+    # Each accepted move strictly increases modularity, so the loop terminates.
+    com = list(range(n))
+    com_tot = list(degrees)  # total degree per community
 
-    def _community_degree(ci: int) -> float:
-        return sum(degrees[i] for i in range(n) if com_idx[i] == ci)
-
-    def _internal_weight(ci: int) -> float:
-        return sum(
-            sum(w for n, w in adjacency[i] if com_idx[n] == ci)
-            for i in range(n) if com_idx[i] == ci
-        )
-
-    improved = True
-    while improved:
+    max_passes = 100
+    for _pass in range(max_passes):
         improved = False
         for i in range(n):
-            ci = com_idx[i]
-            ki_in = sum(w for n, w in adjacency[i] if com_idx[n] == ci and n != i)
-            sigma_in = internal[ci]
-            sigma_total = _community_degree(ci)
-
-            best_delta = 0.0
-            best_ci = ci
+            ci = com[i]
+            ki_in_ci = sum(w for nb, w in adjacency[i] if com[nb] == ci and nb != i)
+            # Temporarily remove i from its current community before scoring.
+            com_tot[ci] -= degrees[i]
+            best_com = ci
+            best_gain = (2.0 * ki_in_ci / total) - (resolution * degrees[i] * com_tot[ci] / (total * total))
             seen = set()
-            for neighbor, weight in adjacency[i]:
-                cj = com_idx[neighbor]
-                if cj in seen:
+            for nb, _w in adjacency[i]:
+                cj = com[nb]
+                if cj == ci or cj in seen:
                     continue
                 seen.add(cj)
-                if cj == ci:
-                    continue
-                ki_out = sum(w for n, w in adjacency[i] if com_idx[n] == cj)
-                delta = 2.0 * weight * m_inv - (sigma_total + degrees[i]) * _community_degree(cj) * m_inv * m_inv + sigma_in * m_inv
-                if delta > best_delta:
-                    best_delta = delta
-                    best_ci = cj
-
-            if best_ci != ci and best_delta > 0.0:
-                internal[ci] -= 2.0 * ki_in
-                internal[best_ci] += 2.0 * ki_in
-                com_idx[i] = best_ci
+                ki_in_cj = sum(w2 for nb2, w2 in adjacency[i] if com[nb2] == cj)
+                gain = (2.0 * ki_in_cj / total) - (resolution * degrees[i] * com_tot[cj] / (total * total))
+                if gain > best_gain:
+                    best_gain = gain
+                    best_com = cj
+            com[i] = best_com
+            com_tot[best_com] += degrees[i]
+            if best_com != ci:
                 improved = True
+        if not improved:
+            break
 
     result: Dict[int, List[str]] = {}
     for i, uid in enumerate(unit_ids):
-        label = com_idx[i]
-        result.setdefault(label, []).append(uid)
-    return list(result.values())
+        result.setdefault(com[i], []).append(uid)
+    communities = list(result.values())
+    _log("_greedy_modularity: produced=%d communities" % len(communities))
+    return communities

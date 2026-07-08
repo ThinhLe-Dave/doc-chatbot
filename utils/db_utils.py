@@ -118,6 +118,18 @@ SQL_GET_CHUNK_BY_ID = "SELECT id, document_id, content, path, metadata FROM chun
 
 SQL_GET_CHUNKS_BY_IDS = "SELECT id, document_id, content, path, metadata FROM chunks WHERE id = ANY(%s)"
 
+SQL_COUNT_CHUNKS_FOR_DOCUMENT = "SELECT COUNT(*) FROM chunks WHERE document_id = %s"
+
+SQL_HAS_GRAPH_CHUNKS = "SELECT 1 FROM chunks WHERE document_id = %s AND metadata->>'graph_id' IS NOT NULL LIMIT 1"
+
+SQL_DELETE_EMBEDDINGS_FOR_DOCUMENT = "DELETE FROM embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = %s)"
+
+SQL_DELETE_CHUNKS_FOR_DOCUMENT = "DELETE FROM chunks WHERE document_id = %s"
+
+SQL_LIST_DOCUMENTS = "SELECT id, source, title, path, metadata FROM documents ORDER BY id"
+
+SQL_LIST_DOCUMENTS_BY_SOURCE = "SELECT id, source, title, path, metadata FROM documents WHERE source = %s ORDER BY id"
+
 SQL_GET_CHUNK_CONTENT = "SELECT content FROM chunks WHERE id = %s"
 
 SQL_SEARCH_SIMILAR = """
@@ -223,6 +235,36 @@ def get_chunks_for_document(cur, document_id: str):
         (document_id,)
     )
     return cur.fetchall()
+
+
+def count_chunks_for_document(cur, document_id: str) -> int:
+    """Return number of chunks stored for a document."""
+    cur.execute(SQL_COUNT_CHUNKS_FOR_DOCUMENT, (document_id,))
+    return int(cur.fetchone()[0])
+
+
+def has_graph_chunks(cur, document_id: str) -> bool:
+    """Return True if any chunk of the document already carries graph metadata."""
+    cur.execute(SQL_HAS_GRAPH_CHUNKS, (document_id,))
+    return cur.fetchone() is not None
+
+
+def delete_document_chunks(cur, document_id: str) -> None:
+    """Delete all chunks (and their embeddings) for a document."""
+    cur.execute(SQL_DELETE_EMBEDDINGS_FOR_DOCUMENT, (document_id,))
+    cur.execute(SQL_DELETE_CHUNKS_FOR_DOCUMENT, (document_id,))
+
+
+def list_documents(cur, source: str = None, limit: int = None):
+    """List documents, optionally filtered by source and capped by limit."""
+    if source:
+        cur.execute(SQL_LIST_DOCUMENTS_BY_SOURCE, (source,))
+    else:
+        cur.execute(SQL_LIST_DOCUMENTS)
+    rows = cur.fetchall()
+    if limit is not None:
+        rows = rows[:limit]
+    return rows
 
 
 def get_chunks_for_chapter(cur, source_hash: str, book: str, chapter: str):

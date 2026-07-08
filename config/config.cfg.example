@@ -23,10 +23,11 @@ hybrid_weight = 0.1
 
 [logging]
 # Logging categories
-# Available categories: vector.store, embedding.model, embedding.encode, embedding.store, processor, db.store, pdf.scanner, scraper
+# Available categories: vector.store, embedding.model, embedding.encode, embedding.store, processor, db.store, pdf.scanner, scraper, generator, graph
+# graph: Logs related to the chunk graph (units, edges, communities).
 # debug: Enable debug output for enabled logging categories (default: false)
 debug = false
-categories = processor, vector.store, db.store, pdf.scanner, scraper
+categories = processor, vector.store, db.store, pdf.scanner, scraper, generator, graph
 
 [database]
 # PostgreSQL connection for storing chunks and embeddings
@@ -70,3 +71,17 @@ model_name = mistralai/Mistral-7B-Instruct-v0.3
 max_new_tokens = 512
 temperature = 0.7
 top_p = 0.95
+
+[graph]
+# Graph-aware chunking configuration
+# Applied when using the `--graph` flag on scrape/pdf_scan, or the `regraph` command.
+# enabled: Global toggle to turn graph mode on for ingest commands (default: false)
+enabled = false
+# semantic_threshold: Minimum cosine similarity to create a semantic edge (default: 0.75)
+# semantic_threshold = 0.75
+# community_resolution: Resolution parameter for community detection (default: 1.0)
+# community_resolution = 1.0
+# expansion_hops: How many hops to expand context during retrieval (default: 2)
+# expansion_hops = 2
+# decay: Context expansion decay factor (default: 0.5)
+# decay = 0.5
