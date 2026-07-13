@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterator, Optional
+from typing import Dict, Iterator, List, Optional
 
 from generator.prompts import build_messages
 from utils.config import (
@@ -43,6 +43,7 @@ def generate(
     max_new_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
+    history: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     client = get_client()
     max_new_tokens = max_new_tokens if max_new_tokens is not None else get_generator_max_new_tokens()
@@ -53,7 +54,7 @@ def generate(
     try:
         response = client.chat.completions.create(
             model=model,
-            messages=build_messages(query, context),
+            messages=build_messages(query, context, history),
             max_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -71,6 +72,7 @@ def generate_stream(
     max_new_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
+    history: Optional[List[Dict[str, str]]] = None,
 ) -> Iterator[str]:
     client = get_client()
     max_new_tokens = max_new_tokens if max_new_tokens is not None else get_generator_max_new_tokens()
@@ -81,7 +83,7 @@ def generate_stream(
     try:
         response = client.chat.completions.create(
             model=model,
-            messages=build_messages(query, context),
+            messages=build_messages(query, context, history),
             max_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,

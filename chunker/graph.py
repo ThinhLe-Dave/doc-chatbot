@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -171,6 +172,46 @@ class ChunkGraph:
                     ))
         _log("build_semantic_edges: added=%d edges=%d" % (len(self.edges) - semantic_edges_before, len(self.edges)))
 
+    def build_keyword_edges(self, units: List[TextUnit], min_shared: int = 3, max_per_unit: int = 5) -> None:
+        """Connect units that share significant keywords/topics.
+
+        This links semantically related (but non-adjacent) units so that
+        community detection groups topical content together and retrieval
+        expansion can surface related chunks even when they are far apart
+        in the document. Purely lexical, so it works without embeddings.
+        """
+        _log("build_keyword_edges: units=%d min_shared=%d max_per_unit=%d" % (len(units), min_shared, max_per_unit))
+        keywords: Dict[str, set] = {}
+        for unit in units:
+            keywords[unit.unit_id] = _extract_keywords(unit.text)
+
+        # Inverted index (keyword -> unit ids) so we only compare units that
+        # actually share a keyword, instead of all O(n^2) unit pairs.
+        keyword_to_units: Dict[str, List[str]] = {}
+        for unit_id, kws in keywords.items():
+            for kw in kws:
+                keyword_to_units.setdefault(kw, []).append(unit_id)
+
+        keyword_edges_before = len(self.edges)
+        for ui, ki in keywords.items():
+            if not ki:
+                continue
+            # Count shared keywords only against candidates reachable via the index.
+            shared_counts: Dict[str, int] = {}
+            for kw in ki:
+                for uj in keyword_to_units.get(kw, ()):
+                    if uj == ui:
+                        continue
+                    shared_counts[uj] = shared_counts.get(uj, 0) + 1
+            scored: List[Tuple[int, str]] = [
+                (shared, uj) for uj, shared in shared_counts.items() if shared >= min_shared
+            ]
+            scored.sort(reverse=True)
+            for shared, uj in scored[:max_per_unit]:
+                weight = min(0.6, 0.3 + 0.1 * shared)
+                self.edges.append(GraphEdge(source=ui, target=uj, edge_type="keyword", weight=weight))
+        _log("build_keyword_edges: added=%d edges=%d" % (len(self.edges) - keyword_edges_before, len(self.edges)))
+
     def detect_communities(self, resolution: float = 1.0) -> Dict[str, int]:
         if not self.units:
             return {}
@@ -196,6 +237,31 @@ class ChunkGraph:
         for edge_data in data.get("edges", []):
             graph.add_edge(GraphEdge.from_dict(edge_data))
         return graph
+
+
+_KEYWORD_STOPWORDS = {
+    "this", "that", "with", "from", "they", "them", "were", "been", "have", "has",
+    "will", "would", "could", "should", "their", "there", "here", "what", "when",
+    "where", "which", "while", "about", "after", "before", "because", "been",
+    "being", "into", "than", "then", "over", "also", "some", "such", "only",
+    "very", "just", "like", "more", "most", "other", "these", "those", "them",
+}
+
+
+def _extract_keywords(text: str, top_k: int = 12) -> set:
+    """Return a small set of significant keyword stems from text (lexical only)."""
+    if not text:
+        return set()
+    words = re.findall(r"[a-zA-Z0-9à-ỹÀ-Ỹ]{4,}", text.lower())
+    counts: Dict[str, int] = {}
+    for word in words:
+        if word in _KEYWORD_STOPWORDS:
+            continue
+        counts[word] = counts.get(word, 0) + 1
+    if not counts:
+        return set()
+    top = sorted(counts.items(), key=lambda kv: (kv[1], len(kv[0])), reverse=True)[:top_k]
+    return {word for word, _ in top}
 
 
 def _cosine_similarity(a: List[float], b: List[float]) -> float:

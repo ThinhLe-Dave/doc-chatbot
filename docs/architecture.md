@@ -88,7 +88,12 @@ PostgresVectorStore or VectorStore
 - `categories` derived from metadata
 - `source_hash` for deduplication
 
-**Graph mode**: Available via `Chunker.create_graph_chunks()` but is experimental and not wired into the standard retrieval pipeline. Graph-aware chunking produces `ChunkGraph` objects with structural, hierarchical, and semantic edges, but these edges are not currently persisted or used as a retrieval signal.
+**Graph mode**: Enabled via the `[graph] enabled` config (or `--graph` on ingest commands). `Chunker.create_graph_chunks()` builds a `ChunkGraph` over the document's text units and is **fully wired into the retrieval pipeline**:
+
+- **Units**: short paragraphs stay as a single unit; long paragraphs (>400 chars) are split into sentence-level units for finer granularity.
+- **Edges**: three kinds connect units — `structural` (adjacent units, bidirectional, weight 1.0), `hierarchical` (adjacent units within the same chapter/section, weight 0.5), and `keyword` (units sharing significant terms, weight 0.3–0.6). `semantic` edges also fire when unit embeddings are present (cosine ≥ `semantic_threshold`).
+- **Communities**: Louvain (`ChunkGraph.detect_communities`, `community_resolution`) groups connected units into communities; each community becomes one graph chunk.
+- **Adjacency persistence**: each chunk stores `connected_chunk_ids` (its graph neighbors with weights) in its `metadata` JSONB, so the graph is persisted in the existing `chunks` table — no separate edge table is required.
 
 ### 4.3 Embedding
 - Model: `paraphrase-multilingual-MiniLM-L12-v2` (384-dim)
@@ -108,7 +113,7 @@ PostgresVectorStore or VectorStore
 - `jobs` table for async job tracking
 - Indexes on embeddings (ivfflat, cosine ops), document_id, and metadata fields
 
-**Note**: There is no `chunk_edges` or graph-edge persistence table. Graph relationships are computed at chunk creation time but not stored or queried during retrieval.
+**Note**: There is deliberately no separate `chunk_edges` / graph-edge table. Graph relationships are persisted in each chunk's `metadata.connected_chunk_ids` (list of `{chunk_id, weight}`), so the existing `chunks` table carries the full graph and retrieval can traverse it without extra schema.
 
 ## 5. Retrieval / Search
 
@@ -121,9 +126,13 @@ encode_query() → normalized embedding vector
 VectorStore.search() or PostgresVectorStore.search()
   - Top-k vector search (semantic cosine similarity)
     ↓
-_expand_candidate_chunks()
-  - For each matched chunk, add ±3 neighboring chunks within same document
-  - Ordered by page/chunk_index/verse
+_expand_candidate_chunks()  (Postgres)  /  _expand_candidate_chunks_file()  (file)
+  - Linear expansion: for each matched chunk, add ±_CONTEXT_WINDOW neighbors
+    within the same document (ordered by page / chunk_index / verse).
+  - Graph expansion: _bfs_graph_expand() follows each chunk's
+    metadata.connected_chunk_ids up to `expansion_hops` (default 2),
+    pruning edges with weight < `decay` (default 0.5). This pulls in
+    topically related chunks even when they are far apart in the document.
     ↓
 _rank_results()
   - Optional hybrid scoring: score = (1 - w) * semantic + w * keyword
@@ -135,7 +144,7 @@ _rank_results()
 List[dict] with score, best_chunk, chunks[], location, metadata
 ```
 
-**Important**: Context expansion is linear (neighboring chunks within the same document), not graph-traversal. There is no graph-edge-based retrieval path at this time.
+**Note**: Context expansion is a combination of linear neighbor expansion (robust fallback for non-graph chunks) and graph-traversal expansion (used when chunks carry `connected_chunk_ids`). The graph path is what lets a single match surface the full available context across a document.
 
 ### 5.2 Hybrid Search
 - **Semantic score**: cosine similarity via pgvector or exact matrix multiply.
@@ -201,8 +210,8 @@ FastAPI endpoints create `asyncio.create_task()` background jobs tracked in `_jo
 
 ## 10. Known Gaps / Future Work
 
-1. **Graph retrieval**: Graph-aware chunking exists but graph-based retrieval (traversing semantic/structural/hierarchical edges at query time) is not implemented. Context expansion remains linear.
-2. **Graph persistence**: No `chunk_edges` or graph tables in the database schema. Graph relationships are transient.
+1. **~~Graph retrieval~~ (resolved)**: Graph-based retrieval is now implemented — `_bfs_graph_expand()` traverses `connected_chunk_ids` using the `[graph] expansion_hops` and `decay` config. Re-run `./run.sh regraph --force` on existing documents to populate `connected_chunk_ids` (it is stored in chunk metadata at chunk-creation time).
+2. **~~Graph persistence~~ (resolved)**: Graph adjacency persists in each chunk's `metadata.connected_chunk_ids`; no separate edge table is needed.
 3. **Production job durability**: In-memory job state is lost on restart. The `jobs` table schema is defined but unused by the web layer.
 4. **Formal dual-store interface**: The two vector stores are accessed via backend-specific branches and duck typing. A shared abstract base class would improve maintainability.
 

@@ -323,6 +323,53 @@ class ChunkerGraphModeTest(unittest.TestCase):
             self.assertIn("graph_id", first)
 
 
+class ChunkGraphKeywordEdgesTest(unittest.TestCase):
+    def test_keyword_edges_link_shared_topics(self):
+        from chunker.graph import ChunkGraph, TextUnit
+
+        graph = ChunkGraph()
+        units = [
+            TextUnit(unit_id="u0", document_id="d1", text="neural networks learn via gradient descent optimization", index=0),
+            TextUnit(unit_id="u1", document_id="d1", text="gradient descent optimizes the neural network loss", index=1),
+            TextUnit(unit_id="u2", document_id="d1", text="the weather is sunny and warm today", index=2),
+        ]
+        for unit in units:
+            graph.add_unit(unit)
+        graph.build_keyword_edges(units, min_shared=2)
+
+        types = [e.edge_type for e in graph.edges]
+        self.assertIn("keyword", types)
+        pairs = {(e.source, e.target) for e in graph.edges}
+        self.assertTrue(pairs & {("u0", "u1"), ("u1", "u0")})
+        # unrelated weather unit should not be linked to the ML units
+        self.assertFalse(pairs & {("u0", "u2"), ("u2", "u0"), ("u1", "u2"), ("u2", "u1")})
+
+
+class ChunkGraphAdjacencyTest(unittest.TestCase):
+    def test_create_graph_chunks_stores_connected_chunk_ids(self):
+        from chunker.chunker import Chunker
+        from chunker.document import Document
+
+        paras = []
+        for i in range(4):
+            paras.append(f"Neural networks learn patterns using gradient descent. The loss function measures error. Training improves the learning rate. Topic block {i} deep learning.")
+        for i in range(4):
+            paras.append(f"Climate change raises global temperatures and sea levels. Polar ice melts as warming accelerates. Coastal cities face flooding. Topic block {i} environment.")
+        doc = Document.create(source="https://example.com", title="T", content="\n\n".join(paras))
+        chunks, graph = Chunker().create_graph_chunks(doc)
+
+        for chunk in chunks:
+            self.assertIn("connected_chunk_ids", chunk.metadata)
+            self.assertIsInstance(chunk.metadata["connected_chunk_ids"], list)
+
+        linked = [c for c in chunks if c.metadata["connected_chunk_ids"]]
+        self.assertTrue(linked, "expected at least one chunk with graph connections")
+        for chunk in linked:
+            for entry in chunk.metadata["connected_chunk_ids"]:
+                self.assertIn("chunk_id", entry)
+                self.assertIn("weight", entry)
+
+
 class ChunkerConfigIntegrationTest(unittest.TestCase):
     def test_graph_config_defaults(self):
         from utils.config import (

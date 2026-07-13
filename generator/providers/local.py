@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterator, Optional
+from typing import Dict, Iterator, List, Optional
 
 from generator.prompts import build_messages
 from utils.config import (
@@ -35,9 +35,9 @@ def get_client_and_tokenizer():
     return _client, _tokenizer
 
 
-def _build_prompt(query: str, context: str) -> str:
+def _build_prompt(query: str, context: str, history: Optional[List[Dict[str, str]]] = None) -> str:
     model, tokenizer = get_client_and_tokenizer()
-    messages = build_messages(query, context)
+    messages = build_messages(query, context, history)
     if hasattr(tokenizer, "apply_chat_template"):
         return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
@@ -54,12 +54,13 @@ def generate(
     max_new_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
+    history: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     model, tokenizer = get_client_and_tokenizer()
     max_new_tokens = max_new_tokens if max_new_tokens is not None else get_generator_max_new_tokens()
     temperature = temperature if temperature is not None else get_generator_temperature()
     top_p = top_p if top_p is not None else get_generator_top_p()
-    prompt = _build_prompt(query, context)
+    prompt = _build_prompt(query, context, history)
 
     try:
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
@@ -84,6 +85,7 @@ def generate_stream(
     max_new_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
+    history: Optional[List[Dict[str, str]]] = None,
 ) -> Iterator[str]:
     from threading import Thread
 
@@ -93,7 +95,7 @@ def generate_stream(
     max_new_tokens = max_new_tokens if max_new_tokens is not None else get_generator_max_new_tokens()
     temperature = temperature if temperature is not None else get_generator_temperature()
     top_p = top_p if top_p is not None else get_generator_top_p()
-    prompt = _build_prompt(query, context)
+    prompt = _build_prompt(query, context, history)
 
     try:
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)

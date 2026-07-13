@@ -15,6 +15,12 @@ from datetime import datetime, timezone
 
 from processor.processor import recommend_documents, ask_question, clean_content
 from processor.processor import _get_ordering_key
+from web_frontend.session_store import (
+    get_or_create_session,
+    get_history,
+    append_turn,
+    clear_session,
+)
 from utils.db_utils import (
     get_document_by_id,
     get_chunks_for_document,
@@ -141,14 +147,19 @@ async def search(request: Request):
         return JSONResponse({"error": "Invalid parameter format"}, status_code=400)
 
     try:
-        all_results = recommend_documents(
-            query=query,
-            top_k=1000,
-            chunk_k=chunk_k,
-            min_score=min_score,
-            hybrid=hybrid,
-            hybrid_weight=hybrid_weight,
-            categories=categories,
+        loop = asyncio.get_event_loop()
+        all_results = await loop.run_in_executor(
+            None,
+            lambda: recommend_documents(
+                query=query,
+                top_k=50,
+                chunk_k=chunk_k,
+                min_score=min_score,
+                hybrid=hybrid,
+                hybrid_weight=hybrid_weight,
+                categories=categories,
+                expand=False,
+            ),
         )
         total = len(all_results)
         total_pages = max(1, (total + page_size - 1) // page_size)
@@ -294,9 +305,10 @@ async def _chat_stream_generator(stream_iterator, job_id: str) -> AsyncIterator[
         yield f"data: {json.dumps({'error': str(e), 'job_id': job_id})}\n\n"
 
 
-async def _run_chat_job(job_id: str, query: str, top_k: int, chunk_k: int, min_score: float, hybrid: bool, hybrid_weight: float, categories: Optional[list]):
+async def _run_chat_job(job_id: str, query: str, top_k: int, chunk_k: int, min_score: float, hybrid: bool, hybrid_weight: float, categories: Optional[list], session_id: Optional[str] = None):
     _update_job(job_id, status="running", message="Thinking...", progress=30)
     try:
+        history = get_history(session_id) if session_id else None
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
@@ -308,9 +320,13 @@ async def _run_chat_job(job_id: str, query: str, top_k: int, chunk_k: int, min_s
                 hybrid=hybrid,
                 hybrid_weight=hybrid_weight,
                 categories=categories,
+                history=history,
             ),
         )
-        _update_job(job_id, status="completed", progress=100, message="Done", result=result, answer=result.get("answer", ""))
+        answer = result.get("answer", "")
+        if session_id:
+            append_turn(session_id, query, answer)
+        _update_job(job_id, status="completed", progress=100, message="Done", result=result, answer=answer)
     except Exception as e:
         _update_job(job_id, status="failed", message=str(e), error=str(e))
 
@@ -332,6 +348,8 @@ async def chat_endpoint(request: Request):
     except (ValueError, TypeError):
         return JSONResponse({"error": "Invalid parameter format"}, status_code=400)
 
+    session_id = get_or_create_session(body.get("session_id"))
+
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {
         "id": job_id,
@@ -346,10 +364,10 @@ async def chat_endpoint(request: Request):
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
     }
-    task = asyncio.create_task(_run_chat_job(job_id, query, top_k, chunk_k, min_score, hybrid, hybrid_weight, categories))
+    task = asyncio.create_task(_run_chat_job(job_id, query, top_k, chunk_k, min_score, hybrid, hybrid_weight, categories, session_id))
     _running_tasks.add(task)
     task.add_done_callback(lambda t: _running_tasks.discard(t))
-    return JSONResponse({"job_id": job_id, "status": "pending"})
+    return JSONResponse({"job_id": job_id, "status": "pending", "session_id": session_id})
 
 
 @app.get("/api/chat-stream/{job_id}")
@@ -409,24 +427,123 @@ async def chat_direct(request: Request):
     except (ValueError, TypeError):
         return JSONResponse({"error": "Invalid parameter format"}, status_code=400)
 
+    session_id = get_or_create_session(body.get("session_id"))
+    history = get_history(session_id)
+
     try:
-        result = ask_question(
-            query=query,
-            top_k=top_k,
-            chunk_k=chunk_k,
-            min_score=min_score,
-            hybrid=hybrid,
-            hybrid_weight=hybrid_weight,
-            categories=categories,
-            stream=False,
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: ask_question(
+                query=query,
+                top_k=top_k,
+                chunk_k=chunk_k,
+                min_score=min_score,
+                hybrid=hybrid,
+                hybrid_weight=hybrid_weight,
+                categories=categories,
+                stream=False,
+                history=history,
+            ),
         )
+        answer = result.get("answer", "")
+        append_turn(session_id, query, answer)
         return JSONResponse({
             "query": query,
-            "answer": result.get("answer", ""),
+            "answer": answer,
             "sources": result.get("sources", []),
+            "session_id": session_id,
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/chat-stream-direct")
+async def chat_stream_direct(request: Request):
+    """Stream a chat answer token-by-token over SSE.
+
+    Retrieval and LLM generation run in a worker thread so the event loop stays
+    responsive; tokens are handed back through an asyncio queue. The full answer
+    is persisted to the conversation session once streaming completes.
+    """
+    body = await request.json()
+    query = (body.get("query") or "").strip()
+    if not query:
+        return JSONResponse({"error": "Missing query parameter"}, status_code=400)
+
+    try:
+        top_k = int(body.get("top_k", 10))
+        chunk_k = int(body.get("chunk_k", 3))
+        min_score = float(body.get("min_score", 0.01))
+        hybrid = bool(body.get("hybrid", False))
+        hybrid_weight = float(body.get("hybrid_weight", 0.1))
+        categories = body.get("categories")
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "Invalid parameter format"}, status_code=400)
+
+    session_id = get_or_create_session(body.get("session_id"))
+    history = get_history(session_id)
+    loop = asyncio.get_running_loop()
+
+    async def event_stream() -> AsyncIterator[str]:
+        queue: asyncio.Queue = asyncio.Queue()
+        sentinel = object()
+
+        def worker():
+            try:
+                result = ask_question(
+                    query=query,
+                    top_k=top_k,
+                    chunk_k=chunk_k,
+                    min_score=min_score,
+                    hybrid=hybrid,
+                    hybrid_weight=hybrid_weight,
+                    categories=categories,
+                    stream=True,
+                    history=history,
+                )
+                loop.call_soon_threadsafe(queue.put_nowait, ("sources", result.get("sources", [])))
+                parts = []
+                for token in result.get("stream", iter(())):
+                    parts.append(token)
+                    loop.call_soon_threadsafe(queue.put_nowait, ("token", token))
+                append_turn(session_id, query, "".join(parts))
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, sentinel)
+
+        loop.run_in_executor(None, worker)
+
+        yield f"data: {json.dumps({'session_id': session_id})}\n\n"
+        while True:
+            item = await queue.get()
+            if item is sentinel:
+                break
+            kind, payload = item
+            if kind == "token":
+                yield f"data: {json.dumps({'content': payload})}\n\n"
+            elif kind == "sources":
+                yield f"data: {json.dumps({'sources': payload})}\n\n"
+            elif kind == "error":
+                yield f"data: {json.dumps({'error': payload})}\n\n"
+            elif kind == "done":
+                yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/chat-reset")
+async def chat_reset(request: Request):
+    """Forget the conversation history for a session."""
+    body = await request.json()
+    raw = body.get("session_id")
+    session_id = raw.strip() if isinstance(raw, str) else ""
+    if session_id:
+        clear_session(session_id)
+    new_session_id = get_or_create_session(None)
+    return JSONResponse({"session_id": new_session_id})
 
 
 @app.get("/api/document/{document_id}")

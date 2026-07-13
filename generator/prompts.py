@@ -32,9 +32,24 @@ Question: {query}
 Answer:"""
 
 
-def build_messages(query: str, context: Optional[str]) -> List[Dict[str, str]]:
+def build_messages(
+    query: str,
+    context: Optional[str],
+    history: Optional[List[Dict[str, str]]] = None,
+) -> List[Dict[str, str]]:
     safe_context = " ".join(str(context).split()) if context else NO_CONTEXT
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": USER_PROMPT_TEMPLATE.format(context=safe_context or NO_CONTEXT, query=query)},
-    ]
+    messages: List[Dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if history:
+        for message in history:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            content = message.get("content")
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": str(content)})
+
+    messages.append(
+        {"role": "user", "content": USER_PROMPT_TEMPLATE.format(context=safe_context or NO_CONTEXT, query=query)}
+    )
+    return messages

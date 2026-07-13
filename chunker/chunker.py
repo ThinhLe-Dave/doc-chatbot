@@ -546,6 +546,7 @@ class Chunker:
         graph.build_structural_edges(units)
         graph.build_hierarchical_edges(units)
         graph.build_semantic_edges(units, threshold=semantic_threshold)
+        graph.build_keyword_edges(units)
 
         communities = graph.detect_communities(resolution=resolution)
 
@@ -581,7 +582,39 @@ class Chunker:
             ))
             chunk_index += 1
 
+        result_chunks = self._attach_graph_adjacency(result_chunks, graph)
+
         return result_chunks, graph
+
+    def _attach_graph_adjacency(self, chunks: List["Chunk"], graph: "ChunkGraph") -> List["Chunk"]:
+        """Store, per chunk, the neighboring chunk ids implied by the graph edges.
+
+        Retrieval expansion uses these connections (instead of raw positional
+        order) so a matched chunk pulls in topically related chunks across the
+        document, helping the user get the full available context.
+        """
+        unit_to_chunk: Dict[str, str] = {}
+        for chunk in chunks:
+            for uid in chunk.unit_ids:
+                unit_to_chunk[uid] = chunk.id
+
+        connections: Dict[str, Dict[str, float]] = {}
+        for edge in graph.edges:
+            source_chunk = unit_to_chunk.get(edge.source)
+            target_chunk = unit_to_chunk.get(edge.target)
+            if not source_chunk or not target_chunk or source_chunk == target_chunk:
+                continue
+            bucket = connections.setdefault(source_chunk, {})
+            if target_chunk not in bucket or edge.weight > bucket[target_chunk]:
+                bucket[target_chunk] = edge.weight
+
+        for chunk in chunks:
+            chunk_conns = connections.get(chunk.id, {})
+            sorted_conns = sorted(chunk_conns.items(), key=lambda kv: kv[1], reverse=True)
+            chunk.metadata["connected_chunk_ids"] = [
+                {"chunk_id": cid, "weight": w} for cid, w in sorted_conns
+            ]
+        return chunks
 
 
 def _extract_text_units(document) -> List[TextUnit]:
@@ -601,6 +634,23 @@ def _extract_text_units(document) -> List[TextUnit]:
 
     idx = 0
     for segment in text_segments:
+        # Keep short paragraphs as a single unit, but split long paragraphs into
+        # sentences so the graph has finer granularity for topical linking.
+        if len(segment) > 400 and len(_SENTENCE_END_RE.findall(segment)) > 1:
+            sentences = [s.strip() for s in _SENTENCE_END_RE.split(segment) if s.strip()]
+            if len(sentences) > 1:
+                for sentence in sentences:
+                    unit_id = f"{document.id}_unit_{idx}"
+                    units.append(TextUnit(
+                        unit_id=unit_id,
+                        document_id=document.id,
+                        text=sentence,
+                        unit_type="sentence",
+                        metadata={**base_metadata, "index": idx},
+                        index=idx,
+                    ))
+                    idx += 1
+                continue
         unit_id = f"{document.id}_unit_{idx}"
         units.append(TextUnit(
             unit_id=unit_id,

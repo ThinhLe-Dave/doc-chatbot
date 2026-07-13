@@ -41,14 +41,15 @@ class PostgresVectorStore:
         """Get or create database connection."""
         if self._conn is None:
             self._connect()
-        else:
-            try:
-                with self._conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-            except Exception:
-                debug("Connection stale, reconnecting...", "db.store")
-                self._conn.close()
+            return self._conn
+
+        closed = getattr(self._conn, "closed", None)
+        if isinstance(closed, (bool, int)):
+            if closed:
+                debug("Connection closed, reconnecting...", "db.store")
                 self._connect()
+            return self._conn
+
         return self._conn
 
     def _connect(self) -> None:

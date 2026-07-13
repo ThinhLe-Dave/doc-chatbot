@@ -122,6 +122,41 @@ def build_chunk_cache(input_file: str, chunk_file: str, graph_mode: bool = False
     return store.build(model)
 
 
+def _store_documents_to_db(documents: List[Document], store: PostgresVectorStore, model, graph_mode: bool) -> int:
+    total_chunks = 0
+    seen_docs = set()
+    batch_chunks = []
+    chunker = Chunker()
+    conn = store._get_connection()
+
+    for doc in documents:
+        doc_path = _build_doc_path(doc)
+        if doc.id not in seen_docs:
+            seen_docs.add(doc.id)
+            with conn.cursor() as cur:
+                insert_document(cur, doc.id, doc.source, doc.title, doc_path, doc.metadata)
+
+        if graph_mode:
+            chunks = chunker.create_graph_chunks(doc)[0]
+        else:
+            chunks = chunker.create_chunks_from_document(doc)
+
+        for chunk in chunks:
+            batch_chunks.append(chunk)
+            if len(batch_chunks) >= 64:
+                store_chunk_batch(conn, batch_chunks, model)
+                conn.commit()
+                total_chunks += len(batch_chunks)
+                batch_chunks = []
+
+    if batch_chunks:
+        store_chunk_batch(conn, batch_chunks, model)
+        conn.commit()
+        total_chunks += len(batch_chunks)
+
+    return total_chunks
+
+
 def scrape_website(url: str, limit: int = 10000, sitemap_first: bool = False, force: bool = False, no_robots: bool = False, graph_mode: bool = False) -> dict:
     url = url.strip()
     if not url:
@@ -138,41 +173,16 @@ def scrape_website(url: str, limit: int = 10000, sitemap_first: bool = False, fo
     store = PostgresVectorStore(config=db_config)
     store.load()
 
-    total_chunks = 0
-    seen_docs = set()
-    batch_chunks = []
-    chunker = Chunker()
+    try:
+        total_chunks = _store_documents_to_db(
+            [Document.from_dict(item) for item in scraper.scraped_data],
+            store,
+            model,
+            graph_mode,
+        )
+    finally:
+        store.close()
 
-    for item in scraper.scraped_data:
-        doc = Document.from_dict(item)
-        doc_path = _build_doc_path(doc)
-        if doc.id not in seen_docs:
-            seen_docs.add(doc.id)
-            conn = store._get_connection()
-            with conn.cursor() as cur:
-                insert_document(cur, doc.id, doc.source, doc.title, doc_path, doc.metadata)
-
-        if graph_mode:
-            chunks = chunker.create_graph_chunks(doc)[0]
-        else:
-            chunks = chunker.create_chunks_from_document(doc)
-        for chunk in chunks:
-            batch_chunks.append(chunk)
-            if len(batch_chunks) >= 64:
-                conn = store._get_connection()
-                store_chunk_batch(conn, batch_chunks, model)
-                total_chunks += len(batch_chunks)
-                conn.commit()
-                batch_chunks = []
-
-    if batch_chunks:
-        conn = store._get_connection()
-        store_chunk_batch(conn, batch_chunks, model)
-        total_chunks += len(batch_chunks)
-
-    if conn:
-        conn.commit()
-    store.close()
     return {
         "total_chunks": total_chunks,
         "pages_scraped": len(scraper.scraped_data),
@@ -185,6 +195,9 @@ def scan_pdf(path: str, chapters: Optional[List[str]] = None, graph_mode: bool =
         raise ValueError(f"Invalid PDF path: {path}")
 
     db_config = DatabaseConfig.from_config_file()
+    if not db_config.is_configured():
+        raise RuntimeError("Database not configured")
+
     scanner = PDFScanner()
     documents = scanner.scan_pdf(path, original_filename=path, chapters=chapters)
 
@@ -192,40 +205,11 @@ def scan_pdf(path: str, chapters: Optional[List[str]] = None, graph_mode: bool =
     store = PostgresVectorStore(config=db_config)
     store.load()
 
-    total_chunks = 0
-    seen_docs = set()
-    batch_chunks = []
-    chunker = Chunker()
+    try:
+        total_chunks = _store_documents_to_db(documents, store, model, graph_mode)
+    finally:
+        store.close()
 
-    for doc in documents:
-        doc_path = _build_doc_path(doc)
-        if doc.id not in seen_docs:
-            seen_docs.add(doc.id)
-            conn = store._get_connection()
-            with conn.cursor() as cur:
-                insert_document(cur, doc.id, doc.source, doc.title, doc_path, doc.metadata)
-
-        if graph_mode:
-            chunks = chunker.create_graph_chunks(doc)[0]
-        else:
-            chunks = chunker.create_chunks_from_document(doc)
-        for chunk in chunks:
-            batch_chunks.append(chunk)
-            if len(batch_chunks) >= 64:
-                conn = store._get_connection()
-                store_chunk_batch(conn, batch_chunks, model)
-                total_chunks += len(batch_chunks)
-                conn.commit()
-                batch_chunks = []
-
-    if batch_chunks:
-        conn = store._get_connection()
-        store_chunk_batch(conn, batch_chunks, model)
-        total_chunks += len(batch_chunks)
-
-    if conn:
-        conn.commit()
-    store.close()
     return {
         "total_chunks": total_chunks,
         "pages_processed": len(documents),

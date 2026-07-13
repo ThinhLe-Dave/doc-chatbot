@@ -82,6 +82,7 @@ button[type="submit"]:disabled { background: #ccc; cursor: not-allowed; }
     <form id="search-form" class="chat-input-form">
         <input type="text" id="search-query" class="chat-input" placeholder="Enter your search query or ask a question..." required autocomplete="off">
         <button type="submit" id="search-btn">Search</button>
+        <button type="button" id="chat-reset-btn" title="Start a new conversation">New chat</button>
     </form>
     <div style="font-size:12px;color:#666;margin-top:4px;"><input type="checkbox" id="search-hybrid" checked> Hybrid scoring</div>
 </div>
@@ -159,13 +160,10 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-function addChatMessage(role, content, sources) {
-    const msgDiv = document.createElement('div');
-    msgDiv.className = `chat-message ${role}`;
-    
+function renderChatContentHtml(content) {
     const paragraphs = (content || '').split(/\n\s*\n|\n/).filter(p => p.trim());
     const htmlParts = [];
-    
+
     for (const paragraph of paragraphs) {
         const sentences = paragraph.split(/(?<=[.!?])\s+/).filter(s => s.trim());
         const sentenceHtml = [];
@@ -183,25 +181,98 @@ function addChatMessage(role, content, sources) {
         }
         htmlParts.push(`<p>${sentenceHtml.join(' ')}</p>`);
     }
-    
-    msgDiv.innerHTML = `<div class="chat-content">${htmlParts.join('')}</div>`;
-    if (sources && sources.length) {
-        const sourceDiv = document.createElement('div');
-        sourceDiv.className = 'chat-message-sources';
-        const sourceRefs = sources.map(s => {
-            if (s.book) {
-                let ref = s.book;
-                if (s.chapter) ref += ` ${s.chapter}`;
-                if (s.verse) ref += `:${s.verse}`;
-                return `[${ref}]`;
-            }
-            return s.title || s.source || 'Unknown';
-        });
-        sourceDiv.textContent = sourceRefs.join(', ');
-        msgDiv.appendChild(sourceDiv);
-    }
+    return htmlParts.join('');
+}
+
+function renderSourcesEl(sources) {
+    if (!sources || !sources.length) return null;
+    const sourceDiv = document.createElement('div');
+    sourceDiv.className = 'chat-message-sources';
+    const sourceRefs = sources.map(s => {
+        if (s.book) {
+            let ref = s.book;
+            if (s.chapter) ref += ` ${s.chapter}`;
+            if (s.verse) ref += `:${s.verse}`;
+            return `[${ref}]`;
+        }
+        return s.title || s.source || 'Unknown';
+    });
+    sourceDiv.textContent = sourceRefs.join(', ');
+    return sourceDiv;
+}
+
+function addChatMessage(role, content, sources) {
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `chat-message ${role}`;
+    msgDiv.innerHTML = `<div class="chat-content">${renderChatContentHtml(content)}</div>`;
+    const sourceDiv = renderSourcesEl(sources);
+    if (sourceDiv) msgDiv.appendChild(sourceDiv);
     document.getElementById('chat-messages').appendChild(msgDiv);
     document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+}
+
+async function streamChatMessage(query) {
+    const chatMessages = document.getElementById('chat-messages');
+    addChatMessage('user', query);
+
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'chat-message assistant';
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'chat-content';
+    msgDiv.appendChild(contentDiv);
+    chatMessages.appendChild(msgDiv);
+
+    let answer = '';
+    let sources = [];
+    let errored = false;
+
+    try {
+        const res = await fetch('/api/chat-stream-direct', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: query,
+                top_k: 10,
+                chunk_k: 3,
+                min_score: 0.01,
+                hybrid: document.getElementById('search-hybrid').checked,
+                hybrid_weight: 0.1,
+                session_id: chatSessionId,
+            }),
+        });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split('\n\n');
+            buffer = events.pop();
+            for (const evt of events) {
+                if (!evt.startsWith('data: ')) continue;
+                const data = evt.slice(6);
+                if (data === '[DONE]') continue;
+                let obj;
+                try { obj = JSON.parse(data); } catch (e) { continue; }
+                if (obj.session_id) setChatSessionId(obj.session_id);
+                if (obj.sources) sources = obj.sources;
+                if (obj.error) { errored = true; answer += `\n[Error: ${obj.error}]`; }
+                if (obj.content) {
+                    answer += obj.content;
+                    contentDiv.innerHTML = `<p>${escapeHtml(answer)}</p>`;
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                }
+            }
+        }
+    } catch (err) {
+        errored = true;
+        answer = answer || `Error: ${err.message}`;
+    }
+
+    // Replace the streamed placeholder with the fully formatted message.
+    msgDiv.remove();
+    addChatMessage('assistant', answer || (errored ? 'Error generating answer' : 'No answer generated'), sources);
 }
 
 function showDocument(doc) {
@@ -250,44 +321,50 @@ window.addEventListener('click', (e) => {
 });
 
 let currentSearchPage = 1;
+
+let chatSessionId = localStorage.getItem('chatSessionId') || null;
+function setChatSessionId(id) {
+    if (id) {
+        chatSessionId = id;
+        localStorage.setItem('chatSessionId', id);
+    }
+}
+
+document.getElementById('chat-reset-btn').addEventListener('click', async () => {
+    try {
+        const res = await fetch('/api/chat-reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: chatSessionId }),
+        });
+        const data = await res.json();
+        setChatSessionId(data.session_id);
+    } catch (err) {
+        // ignore reset errors; still clear the local view below
+    }
+    document.getElementById('chat-messages').innerHTML = '';
+});
+
 document.getElementById('search-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const query = document.getElementById('search-query').value.trim();
     if (!query) return;
-    
+
     const btn = document.getElementById('search-btn');
     const chatTyping = document.getElementById('chat-typing');
-    
+
     currentSearchPage = 1;
     doSearch();
-    
+
     chatTyping.style.display = 'block';
     btn.disabled = true;
-    fetch('/api/chat-direct', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            query: query,
-            top_k: 10,
-            chunk_k: 3,
-            min_score: 0.01,
-            hybrid: document.getElementById('search-hybrid').checked,
-            hybrid_weight: 0.1,
-        })
-    })
-    .then(res => res.json())
-    .then(data => {
-        addChatMessage('user', query);
-        addChatMessage('assistant', data.answer || 'No answer generated', data.sources);
-    })
-    .catch(err => {
-        addChatMessage('assistant', `Error: ${err.message}`);
-    })
-    .finally(() => {
+    document.getElementById('search-query').value = '';
+    try {
+        await streamChatMessage(query);
+    } finally {
         chatTyping.style.display = 'none';
         btn.disabled = false;
-        document.getElementById('search-query').value = '';
-    });
+    }
 });
 
 async function pollJob(jobId, resultEl, btn, originalLabel) {

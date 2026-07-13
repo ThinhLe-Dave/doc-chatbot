@@ -123,6 +123,7 @@ def generate_answer(
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stream: bool = False,
+    history: Optional[List[Dict[str, str]]] = None,
 ) -> str | Iterator[str]:
     if context is None and search_results:
         context = format_context(search_results)
@@ -150,6 +151,7 @@ def generate_answer(
                     max_new_tokens=max_new_tokens,
                     temperature=temperature,
                     top_p=top_p,
+                    history=history,
                 )
             )
 
@@ -159,6 +161,7 @@ def generate_answer(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
+            history=history,
         )
         debug(f"generated answer length={len(answer)}", "generator")
         return _clean_response(answer)

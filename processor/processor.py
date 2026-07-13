@@ -1,7 +1,9 @@
 import base64
 import hashlib
 import json
+import os
 import re
+import threading
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Set, Tuple, Union
 
 import numpy as np
@@ -14,17 +16,22 @@ from utils.logging import debug, error
 from vector_store.db_store import PostgresVectorStore, PostgresVectorStoreError
 from vector_store.db_config import DatabaseConfig
 from vector_store.store import VectorStore
-from utils.db_utils import get_chunks_by_ids, get_chunk_content
+from utils.db_utils import get_chunks_by_ids
 
 _CACHED_CHUNK_STORE: Optional[Union[PostgresVectorStore, VectorStore]] = None
 _CACHED_STORE_TYPE: Optional[str] = None
 _CACHED_STORE_KEY: Optional[str] = None
+# Serializes access to the shared retrieval store / DB connection so requests
+# offloaded to worker threads by the web layer do not use it concurrently.
+_STORE_LOCK = threading.Lock()
 from utils.config import (
     get_search_top_k,
     get_search_chunk_k,
     get_search_min_score,
     get_search_hybrid,
     get_search_hybrid_weight,
+    get_graph_expansion_hops,
+    get_graph_decay,
 )
 
 
@@ -126,12 +133,97 @@ def _get_ordering_key(row: Tuple[Any, ...]) -> Tuple[Any, ...]:
     return (float("inf"), chunk_id)
 
 
+def _connections_from_meta(metadata: Any) -> List[Tuple[str, float]]:
+    if not isinstance(metadata, Mapping):
+        return []
+    conns = metadata.get("connected_chunk_ids")
+    if not isinstance(conns, list):
+        return []
+    out: List[Tuple[str, float]] = []
+    for entry in conns:
+        if isinstance(entry, dict):
+            cid = entry.get("chunk_id")
+            weight = entry.get("weight", 1.0)
+        elif isinstance(entry, str):
+            cid = entry
+            weight = 1.0
+        else:
+            continue
+        if cid:
+            out.append((str(cid), float(weight)))
+    return out
+
+
+def _bfs_graph_expand(
+    seed_ids: Set[str],
+    fetch_connections,
+    expansion_hops: int,
+    decay: float,
+) -> Set[str]:
+    """Breadth-first expand seed chunk ids along graph edges.
+
+    `fetch_connections(chunk_id)` returns a list of (neighbor_id, weight) pairs.
+    Edges with weight below `decay` are pruned so only meaningful connections
+    propagate across hops.
+    """
+    visited: Set[str] = set(seed_ids)
+    frontier: List[str] = list(seed_ids)
+    for _ in range(max(0, expansion_hops)):
+        if not frontier:
+            break
+        next_frontier: List[str] = []
+        for cid in frontier:
+            for neighbor_id, weight in fetch_connections(cid):
+                if not neighbor_id or neighbor_id in visited:
+                    continue
+                if weight < decay:
+                    continue
+                visited.add(neighbor_id)
+                next_frontier.append(neighbor_id)
+        frontier = next_frontier
+    return visited
+
+
+_file_chunk_index_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+
+def _get_file_chunk_index(chunk_file: str) -> Dict[str, Any]:
+    """Return an id -> chunk map for a file store, cached by path and mtime.
+
+    Avoids reparsing the whole chunk JSON on every retrieval request.
+    """
+    try:
+        mtime = os.path.getmtime(chunk_file)
+    except OSError:
+        return {}
+    cached = _file_chunk_index_cache.get(chunk_file)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    from chunker.chunker import load_chunks_from_json
+    by_id = {c.id: c for c in load_chunks_from_json(chunk_file)}
+    _file_chunk_index_cache[chunk_file] = (mtime, by_id)
+    return by_id
+
+
+def _get_chunk_file_from_store(store: VectorStore) -> Optional[str]:
+    config = getattr(store, "config", None)
+    if config is None:
+        return None
+    chunk_file = getattr(config, "chunk_file", None)
+    if chunk_file and os.path.exists(chunk_file):
+        return str(chunk_file)
+    return None
+
+
 def _expand_candidate_chunks(
     store: PostgresVectorStore,
     candidate_ids: Set[str],
 ) -> Set[str]:
     if not candidate_ids:
         return candidate_ids
+
+    expansion_hops = get_graph_expansion_hops()
+    decay = get_graph_decay()
 
     expanded = set(candidate_ids)
     try:
@@ -162,6 +254,33 @@ def _expand_candidate_chunks(
     if neighbor_ids:
         expanded.update(neighbor_ids)
 
+    try:
+        conn = store._get_connection()
+        with conn.cursor() as gcur:
+            # Breadth-first graph expansion with one bulk query per hop
+            # (instead of one query per neighbor) to avoid N+1 round-trips.
+            visited: Set[str] = set(candidate_ids)
+            frontier: List[str] = list(candidate_ids)
+            for _ in range(max(0, expansion_hops)):
+                if not frontier:
+                    break
+                next_frontier: List[str] = []
+                for row in get_chunks_by_ids(gcur, frontier):
+                    for neighbor_id, weight in _connections_from_meta(row[4]):
+                        if not neighbor_id or neighbor_id in visited or weight < decay:
+                            continue
+                        visited.add(neighbor_id)
+                        next_frontier.append(neighbor_id)
+                frontier = next_frontier
+        expanded.update(visited)
+        debug(
+            "graph expansion: seeds=%d hops=%d decay=%.2f -> %d chunks"
+            % (len(candidate_ids), expansion_hops, decay, len(expanded)),
+            "processor",
+        )
+    except Exception as exc:
+        debug(f"graph context expansion failed: {exc}", "processor")
+
     return expanded
 
 
@@ -173,14 +292,14 @@ def _expand_candidate_chunks_file(
     try:
         chunk_ids_map = {cid: i for i, cid in enumerate(store._chunk_ids)}
         chunks_by_doc: Dict[str, List[Tuple[Any, str]]] = {}
-        
+
         for cid in chunk_ids_list:
             idx = chunk_ids_map.get(cid)
             if idx is not None:
                 doc_id = store._chunk_ids[idx].split("/")[0] if "/" in store._chunk_ids[idx] else store._chunk_ids[idx]
                 ordering = (idx, cid)
                 chunks_by_doc.setdefault(doc_id, []).append((ordering, cid))
-        
+
         neighbor_ids: List[str] = []
         for items in chunks_by_doc.values():
             items.sort()
@@ -189,9 +308,28 @@ def _expand_candidate_chunks_file(
                 start = max(0, position - _CONTEXT_WINDOW)
                 end = min(len(ids), position + _CONTEXT_WINDOW + 1)
                 neighbor_ids.extend(ids[start:end])
-        
+
         if neighbor_ids:
             expanded.update(neighbor_ids)
+
+        expansion_hops = get_graph_expansion_hops()
+        decay = get_graph_decay()
+        chunk_file = getattr(getattr(store, "config", None), "chunk_file", None)
+        by_id = _get_file_chunk_index(chunk_file) if chunk_file else {}
+
+        def fetch_connections(chunk_id: str) -> List[Tuple[str, float]]:
+            chunk = by_id.get(chunk_id)
+            if chunk is None:
+                return []
+            return _connections_from_meta(chunk.metadata)
+
+        graph_expanded = _bfs_graph_expand(set(chunk_ids_list), fetch_connections, expansion_hops, decay)
+        expanded.update(graph_expanded)
+        debug(
+            "graph (file) expansion: seeds=%d hops=%d decay=%.2f -> %d chunks"
+            % (len(chunk_ids_list), expansion_hops, decay, len(expanded)),
+            "processor",
+        )
     except Exception as exc:
         debug(f"context expansion failed: {exc}", "processor")
     return expanded
@@ -202,9 +340,14 @@ def _get_chunks_by_ids_file(
     store: VectorStore,
 ) -> List["Chunk"]:
     result: List["Chunk"] = []
+    chunk_file = _get_chunk_file_from_store(store)
+    if not chunk_file:
+        debug("file store chunk file not found", "processor")
+        return result
+
     try:
         from chunker.chunker import load_chunks_from_json
-        for chunk in load_chunks_from_json(str(Path(__file__).resolve().parent.parent / "database" / "pdf_data_chunks.json")):
+        for chunk in load_chunks_from_json(chunk_file):
             if chunk.id in chunk_ids:
                 result.append(chunk)
     except Exception as exc:
@@ -349,6 +492,7 @@ def _rank_results(
     categories: Optional[List[str]],
     store=None,
     store_type: str = "postgres",
+    expand: bool = True,
 ) -> List[dict]:
     query_terms = _extract_query_terms(query)
     debug(f"query_terms={sorted(query_terms)} hybrid={hybrid} hybrid_weight={hybrid_weight}", "processor")
@@ -401,73 +545,58 @@ def _rank_results(
             if v
         }
 
-    if hybrid and query_terms:
-        keyword_scores = _compute_keyword_scores(candidate_ids, query_terms)
-    else:
-        keyword_scores = {}
-
     original_ids = set(candidate_ids)
-    
     if store_type == "file":
-        expanded_candidate_ids = _expand_candidate_chunks_file(list(candidate_ids), store)
+        if expand:
+            expanded_candidate_ids = _expand_candidate_chunks_file(list(candidate_ids), store)
+        else:
+            expanded_candidate_ids = set(original_ids)
         chunks = _get_chunks_by_ids_file(expanded_candidate_ids, store)
-        for chunk in chunks:
-            chunk_meta_categories = [str(c).lower() for c in (chunk.metadata.get("categories") or [])]
-            if normalized_categories and not normalized_categories.intersection(chunk_meta_categories):
-                continue
-
-            score_value = scores.get(chunk.id, 0.0)
-            if hybrid and chunk.id in keyword_scores:
-                score_value = (1.0 - hybrid_weight) * score_value + hybrid_weight * keyword_scores[chunk.id]
-
-            if chunk.id in original_ids and score_value < min_score:
-                continue
-
-            meta = chunk.metadata or {}
-            document_id = _build_chapter_id(meta) or chunk.document_id
-            _add_chunk_to_document(
-                chunk_id=chunk.id,
-                document_id=document_id,
-                content=chunk.content,
-                path=chunk.path,
-                metadata=chunk.metadata,
-                score_value=score_value,
-            )
     else:
-        store.load()
-        expanded_candidate_ids = _expand_candidate_chunks(store, original_ids)
+        if expand:
+            expanded_candidate_ids = _expand_candidate_chunks(store, original_ids)
+        else:
+            expanded_candidate_ids = set(original_ids)
         with store._get_connection().cursor() as cur:
             rows = get_chunks_by_ids(cur, expanded_candidate_ids)
-            for row in rows:
-                chunk = Chunk(
+            chunks = [
+                Chunk(
                     id=row[0],
                     document_id=row[1],
                     content=row[2],
                     path=row[3] if row[3] else [],
                     metadata=row[4] if row[4] else {},
                 )
+                for row in rows
+            ]
 
-                chunk_meta_categories = [str(c).lower() for c in (chunk.metadata.get("categories") or [])]
-                if normalized_categories and not normalized_categories.intersection(chunk_meta_categories):
-                    continue
+    # Keyword (hybrid) scores are computed in-memory from the chunks we already
+    # fetched, instead of a second store/connection and one query per chunk.
+    keyword_scores = _keyword_scores_from_chunks(chunks, query_terms) if hybrid and query_terms else {}
 
-                score_value = scores.get(chunk.id, 0.0)
-                if hybrid and chunk.id in keyword_scores:
-                    score_value = (1.0 - hybrid_weight) * score_value + hybrid_weight * keyword_scores[chunk.id]
 
-                if chunk.id in original_ids and score_value < min_score:
-                    continue
+    for chunk in chunks:
+        chunk_meta_categories = [str(c).lower() for c in (chunk.metadata.get("categories") or [])]
+        if normalized_categories and not normalized_categories.intersection(chunk_meta_categories):
+            continue
 
-                meta = chunk.metadata or {}
-                document_id = _build_chapter_id(meta) or chunk.document_id
-                _add_chunk_to_document(
-                    chunk_id=chunk.id,
-                    document_id=document_id,
-                    content=chunk.content,
-                    path=chunk.path,
-                    metadata=chunk.metadata,
-                    score_value=score_value,
-                )
+        score_value = scores.get(chunk.id, 0.0)
+        if hybrid and chunk.id in keyword_scores:
+            score_value = (1.0 - hybrid_weight) * score_value + hybrid_weight * keyword_scores[chunk.id]
+
+        if chunk.id in original_ids and score_value < min_score:
+            continue
+
+        meta = chunk.metadata or {}
+        document_id = _build_chapter_id(meta) or chunk.document_id
+        _add_chunk_to_document(
+            chunk_id=chunk.id,
+            document_id=document_id,
+            content=chunk.content,
+            path=chunk.path,
+            metadata=chunk.metadata,
+            score_value=score_value,
+        )
 
     for doc in document_chunks.values():
         doc["chunks"] = deduplicate_chunks(doc["chunks"])
@@ -499,6 +628,7 @@ def recommend_documents(
     hybrid: bool = None,
     hybrid_weight: float = None,
     categories: Optional[List[str]] = None,
+    expand: bool = True,
 ) -> List[dict]:
     top_k = top_k if top_k is not None else get_search_top_k()
     chunk_k = chunk_k if chunk_k is not None else get_search_chunk_k()
@@ -507,18 +637,22 @@ def recommend_documents(
     hybrid_weight = hybrid_weight if hybrid_weight is not None else get_search_hybrid_weight()
     hybrid_weight = max(0.0, min(1.0, hybrid_weight))
 
-    debug(f"recommend query={query!r} top_k={top_k} chunk_k={chunk_k} min_score={min_score} hybrid={hybrid} categories={categories}", "processor")
+    debug(f"recommend query={query!r} top_k={top_k} chunk_k={chunk_k} min_score={min_score} hybrid={hybrid} expand={expand} categories={categories}", "processor")
 
-    store, store_type = _resolve_chunk_store()
-    if store.chunk_count == 0:
-        raise ValueError("Could not load any chunks from the database.")
+    # The retrieval store keeps a single shared DB connection, which is not
+    # safe for concurrent use. Serialize retrieval so the FastAPI layer can
+    # offload requests to worker threads without corrupting that connection.
+    with _STORE_LOCK:
+        store, store_type = _resolve_chunk_store()
+        if store.chunk_count == 0:
+            raise ValueError("Could not load any chunks from the database.")
 
-    query_embedding = _encode_query(query)
-    candidate_ids, scores = _search_and_score(store, query_embedding, top_k, min_score, categories, store_type)
+        query_embedding = _encode_query(query)
+        candidate_ids, scores = _search_and_score(store, query_embedding, top_k, min_score, categories, store_type)
 
-    return _rank_results(
-        candidate_ids, scores, query, hybrid, hybrid_weight, min_score, chunk_k, top_k, categories, store, store_type
-    )
+        return _rank_results(
+            candidate_ids, scores, query, hybrid, hybrid_weight, min_score, chunk_k, top_k, categories, store, store_type, expand
+        )
 
 
 def _extract_query_terms(query: str) -> set[str]:
@@ -536,48 +670,27 @@ def _normalize_ocr(text: str) -> str:
     return _OCR_SPACE_RE.sub(r'\1\2', text)
 
 
-def _compute_keyword_scores(chunk_ids: set, query_terms: set) -> dict:
+def _keyword_scores_from_chunks(chunks: List["Chunk"], query_terms: set) -> dict:
+    """Compute keyword-overlap scores in-memory from already-fetched chunks.
+
+    Avoids a second vector store, extra connection, and one query per chunk
+    (the old N+1 path) on every hybrid chat request.
+    """
     keyword_scores: dict = {}
     if not query_terms:
         return keyword_scores
 
-    from pathlib import Path
-    chunk_file = Path(__file__).resolve().parent.parent / "database" / "pdf_data_chunks.json"
-    if chunk_file.exists():
-        try:
-            from chunker.chunker import load_chunks_from_json
-            for chunk in load_chunks_from_json(str(chunk_file)):
-                if chunk.id in chunk_ids:
-                    text = (chunk.content + " " + (chunk.metadata.get("title") or "")).lower()
-                    normalized_text = _normalize_ocr(text)
-                    matched = sum(
-                        1
-                        for term in query_terms
-                        if re.search(rf"\b{re.escape(term)}\b", normalized_text)
-                    )
-                    keyword_scores[chunk.id] = matched / len(query_terms)
-        except Exception as exc:
-            debug(f"keyword score file load failed: {exc}", "processor")
-    else:
-        db_config = DatabaseConfig.from_config_file()
-        if db_config.is_configured():
-            store = PostgresVectorStore(config=db_config)
-            try:
-                store.load()
-                with store._get_connection().cursor() as cur:
-                    for chunk_id in chunk_ids:
-                        row = get_chunk_content(cur, chunk_id)
-                        if row:
-                            normalized_text = _normalize_ocr(row[0].lower())
-                            matched = sum(
-                                1
-                                for term in query_terms
-                                if re.search(rf"\b{re.escape(term)}\b", normalized_text)
-                            )
-                            keyword_scores[chunk_id] = matched / len(query_terms)
-            finally:
-                store.close()
+    term_count = len(query_terms)
+    # Precompile term patterns once instead of per chunk.
+    term_patterns = [re.compile(rf"\b{re.escape(term)}\b") for term in query_terms]
+    for chunk in chunks:
+        metadata = chunk.metadata if isinstance(chunk.metadata, dict) else {}
+        title = metadata.get("title") or ""
+        normalized_text = _normalize_ocr((chunk.content + " " + title).lower())
+        matched = sum(1 for pattern in term_patterns if pattern.search(normalized_text))
+        keyword_scores[chunk.id] = matched / term_count
     return keyword_scores
+
 
 
 def _build_document_entry(chunk_id, document_id, content, path, metadata, score_value, chunk_k):
@@ -678,6 +791,7 @@ def ask_question(
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     stream: bool = False,
+    history: Optional[List[Dict[str, str]]] = None,
 ) -> dict:
     """
     Ask a question using RAG: retrieve documents and generate an answer.
@@ -725,6 +839,7 @@ def ask_question(
                 temperature=temperature,
                 top_p=top_p,
                 stream=True,
+                history=history,
             ),
             "sources": results[:effective_top_k],
         }
@@ -736,6 +851,7 @@ def ask_question(
         temperature=temperature,
         top_p=top_p,
         stream=False,
+        history=history,
     )
 
     cited_sources = _extract_cited_sources(answer, results[:effective_top_k], max_sources=10)
